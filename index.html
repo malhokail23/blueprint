@@ -334,7 +334,7 @@ function gSalt(){return b2h(crypto.getRandomValues(new Uint8Array(32)));}
 async function deriveKey(pass,saltHex){
   const e=new TextEncoder();
   const km=await crypto.subtle.importKey('raw',e.encode(pass),'PBKDF2',false,['deriveKey']);
-  return crypto.subtle.deriveKey({name:'PBKDF2',salt:h2b(saltHex),iterations:100000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+  return crypto.subtle.deriveKey({name:'PBKDF2',salt:h2b(saltHex),iterations:100000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},true,['encrypt','decrypt']);
 }
 async function encObj(key,data){
   const iv=crypto.getRandomValues(new Uint8Array(12));
@@ -380,7 +380,7 @@ async function initAuth(){
     const sk=sessionStorage.getItem('bp_sk'),salt=sessionStorage.getItem('bp_salt');
     if(sk&&salt){
       try{
-        const key=await crypto.subtle.importKey('raw',h2b(sk),{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+        const key=await crypto.subtle.importKey('raw',h2b(sk),{name:'AES-GCM',length:256},true,['encrypt','decrypt']);
         await decObj(key,d.ver);
         sessionKey=key;
         await loadState(d);
