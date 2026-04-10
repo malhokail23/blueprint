@@ -272,7 +272,15 @@ async function verifyPass(pass,salt,ver){const k=await deriveKey(pass,salt);cons
 
 // ── SUPABASE ──
 async function sbGet(id){
-  try{const r=await fetch(`${SB}/rest/v1/dashboard_data?id=eq.${id}&select=payload`,{headers:{'apikey':SK,'Authorization':'Bearer '+SK}});const d=await r.json();if(!d?.length||!d[0]?.payload)return null;return JSON.parse(d[0].payload);}catch{return null;}
+  try{
+    const ctrl=new AbortController();
+    const timer=setTimeout(()=>ctrl.abort(),10000);
+    const r=await fetch(`${SB}/rest/v1/dashboard_data?id=eq.${id}&select=payload`,{headers:{'apikey':SK,'Authorization':'Bearer '+SK},signal:ctrl.signal});
+    clearTimeout(timer);
+    const d=await r.json();
+    if(!d?.length||!d[0]?.payload)return null;
+    return JSON.parse(d[0].payload);
+  }catch{return null;}
 }
 async function sbPut(id,payload){
   const res=await fetch(`${SB}/rest/v1/dashboard_data`,{method:'POST',headers:{'apikey':SK,'Authorization':'Bearer '+SK,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates,return=minimal'},body:JSON.stringify({id,payload:JSON.stringify(payload),updated_at:new Date().toISOString()})});
