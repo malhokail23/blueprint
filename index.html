@@ -263,20 +263,22 @@ function toggleGroup(g){
   const dd=document.getElementById('nav-dropdown');
   if(!dd)return;
   if(activeGroup===g){
-    activeGroup=null;dd.className='nav-dd';dd.innerHTML='';
+    activeGroup=null;
+    dd.style.display='none';dd.innerHTML='';
     document.querySelectorAll('.nav-arrow').forEach(a=>a.style.transform='');
     return;
   }
   activeGroup=g;
   const grp=NAV_GROUPS[g];
-  dd.innerHTML=grp.tabs.map(t=>`<button class="${S.tab===t?'active':''}" onclick="sw('${t}')">${grp.labels[t]}</button>`).join('');
-  dd.className='nav-dd open';
+  dd.innerHTML=grp.tabs.map(t=>`<button onclick="sw('${t}')" style="${S.tab===t?'background:var(--text);color:var(--bg);border-color:var(--text)':''}">${grp.labels[t]}</button>`).join('');
+  dd.style.display='flex';
   document.querySelectorAll('.nav-arrow').forEach(a=>a.style.transform='');
-  const arr=document.getElementById('arr-'+g);if(arr)arr.style.transform='rotate(180deg)';
+  const arr=document.getElementById('arr-'+g);
+  if(arr)arr.style.transform='rotate(180deg)';
 }
 function closeGroupIfOutside(tab){
   const g=TAB_TO_GROUP[tab];
-  if(!g&&activeGroup){activeGroup=null;const dd=document.getElementById('nav-dropdown');if(dd){dd.className='nav-dd';dd.innerHTML='';}document.querySelectorAll('.nav-arrow').forEach(a=>a.style.transform='');}
+  if(!g&&activeGroup){activeGroup=null;const dd=document.getElementById('nav-dropdown');if(dd){dd.style.display='none';dd.innerHTML='';}document.querySelectorAll('.nav-arrow').forEach(a=>a.style.transform='');}
 }
 const SADAD_CODES={"001": "STC", "002": "Saudi Electricity Company (SEC)", "003": "Tawuniya Insurance", "004": "Marafiq", "005": "Mobily", "006": "Madinah Municipality", "008": "Qiyas", "010": "Riyadh Municipality", "013": "Ministry of Commerce", "014": "STCSC", "015": "Water Services", "016": "AlAhli Finance", "018": "American Express", "019": "Jeddah Chamber of Commerce", "020": "ZATCA (Zakat & Tax)", "021": "Saudi Post", "022": "Saudia Airlines", "025": "Eastern Province Municipality", "026": "FlyNas", "027": "Holy Makkah Municipality", "028": "Jeddah Municipality", "030": "Saudi Customs", "032": "OSN", "033": "GO Telecom", "036": "Saudi Credit Bureau (SIMAH)", "040": "Real Estate Development Fund", "042": "CITC", "043": "Adahi", "044": "Zain", "045": "Saudi Agricultural Bank", "050": "Ministry of Labor", "054": "AlRajhi Bank Services", "055": "ITC", "057": "Saudi Tourism Authority", "058": "Social Development Bank", "060": "GOSI", "065": "Abdul Latif Jameel Finance", "067": "Riyad Bank Payments", "070": "Al Qassim Municipality", "071": "Banque Saudi Fransi", "075": "Ministry of Transportation", "078": "Bank Al-Jazira", "080": "King Saud University", "082": "ANB Payments", "084": "Aseer Province Municipality", "088": "Ministry of Finance", "089": "Saudi Ports Authority", "098": "General Authority of Civil Aviation", "101": "Ministry of Foreign Affairs", "105": "KACST", "106": "Taibah University", "108": "Ministry of Investment", "110": "AlRajhi Takaful", "112": "Amanah Al-Ahsa", "113": "Taif Municipality", "117": "KFUPM", "118": "King Faisal University", "120": "Saudi Railways", "122": "Tawzea", "128": "Ministry of Health", "130": "Bupa Arabia", "132": "Umm Al-Qura University", "134": "Extra (United Electronics)", "136": "Arabian Shield Insurance", "137": "Saudi Electronic University", "138": "National Water Company (NWC)", "139": "Asharqia Chamber", "140": "Bank Albilad", "141": "Government e-Procurement", "142": "HRDF", "143": "Saudi Industrial Development Fund", "147": "Saudi Home Loans", "149": "STC (Sawa)", "150": "SAPTCO", "151": "Virgin Mobile", "153": "Ejar (Property Registry)", "160": "Ministry of Justice", "161": "Ministry of Haj and Umrah", "163": "Saudi Investment Bank", "165": "SaudiOrix", "166": "Emaar Economic City", "175": "Bidaya Home Finance", "177": "Ministry of Municipality & Rural Affairs", "180": "Public Transport Authority", "181": "Flyadeal", "182": "Sakani \u2013 National Housing", "184": "Lebara", "185": "Saudi Exhibition & Convention Bureau", "187": "Ijarah Finance", "188": "AJIL Financial Services", "190": "Public Pension Agency (PPA)", "191": "Saudi Railway Company (SAR)", "197": "Tameeni (Insurance)", "199": "Takamol Holding", "204": "General Commission for Audiovisual Media", "206": "Haramain High Speed Rail", "207": "STC Pay", "209": "Tatweer Educational Tech", "213": "Maharah HR", "215": "University of Jeddah", "218": "Qassim University", "222": "General Directorate of Border Guard", "226": "Najran Province Emirate", "229": "SWCC (Saline Water)", "231": "Royal Saudi Land Forces", "234": "Public Security Directorate (Traffic/Passports)", "236": "Hafr Al Batin Municipality", "237": "Makkah Region Emirate", "241": "Ministry of Education", "242": "Saudi Authority for Intellectual Property", "249": "King Khalid University", "252": "Saudi Arabian National Guard", "254": "Saudi Red Crescent Authority", "255": "Musaned (Domestic Workers Platform)", "256": "Northern Border University", "257": "King Faisal Specialist Hospital", "259": "Premium Residency Center (Iqama)", "265": "Royal Saudi Naval Forces", "267": "Ministry of Energy", "270": "Ministry of Justice \u2013 Alimony Fund", "272": "Royal Commission for Jubail and Yanbu", "275": "General Entertainment Authority", "278": "General Organization for Military Industries", "280": "School Transport"};
 
@@ -464,9 +466,8 @@ function sw(tab){
   if(activeGroup&&activeGroup===grp){
     const g=NAV_GROUPS[grp];
     const dd=document.getElementById('nav-dropdown');
-    if(dd)dd.innerHTML=g.tabs.map(t=>`<button class="${tab===t?'active':''}" onclick="sw('${t}')">${g.labels[t]}</button>`).join('');
+    if(dd)dd.innerHTML=g.tabs.map(t=>`<button onclick="sw('${t}')" style="${tab===t?'background:var(--text);color:var(--bg);border-color:var(--text)':''}">${g.labels[t]}</button>`).join('');
   } else if(activeGroup&&activeGroup!==grp){
-    // switching to a non-group tab closes dropdown
     closeGroupIfOutside(tab);
   }
   render();updateBadge();
