@@ -1084,10 +1084,54 @@ function addBill(){
 function delBill(id){S.bills=S.bills.filter(x=>x.id!==id);sched();render();}
 
 // --- STAFF ---
+function advStatus(a){
+  // Determine if deduction is active this month
+  const now=getYM(new Date());
+  if(a.status==='settled'||a.status==='forgiven')return a.status;
+  if(a.deductStart&&a.deductStart>now)return'pending';
+  if(a.remaining<=0)return'settled';
+  return'active';
+}
+function advThisMonth(st){
+  // Total deduction for current month across all active advances
+  const now=getYM(new Date());
+  return(st.advances||[]).filter(a=>advStatus(a)==='active').reduce((s,a)=>{
+    const override=(a.history||[]).find(h=>h.month===now);
+    if(override)return s+(override.skipped?0:override.amount);
+    return s+(a.monthlyDeduct||0);
+  },0);
+}
 function rStaff(){
+  const now=getYM(new Date());
   const cards=S.staff.map(st=>{
-    const adv=(st.advances||[]).filter(a=>a.remaining>0);
-    const ded=adv.reduce((s,a)=>s+(a.monthlyDeduct||0),0);
+    const ded=advThisMonth(st);
+    const net=st.salary-ded;
+    const activeAdv=(st.advances||[]).filter(a=>['active','pending'].includes(advStatus(a)));
+    const advHtml=activeAdv.map((a,ai)=>{
+      const st2=advStatus(a);
+      const override=(a.history||[]).find(h=>h.month===now);
+      const thisMonthAmt=override?(override.skipped?0:override.amount):(a.monthlyDeduct||0);
+      const statusColor={active:'#FEF3C7',pending:'#DBEAFE',settled:'#DCFCE7',forgiven:'#F3E8FF'};
+      const thisMonthNote=override?(override.skipped?'<span style="color:var(--warn)"> · Skipped this month</span>':`<span style="color:var(--info)"> · Custom: ${fmtP(override.amount)} this month</span>`):'';
+      return`<div style="background:${statusColor[st2]||'#FEF3C7'};padding:10px 12px;border-radius:8px;margin-top:8px">
+        <div class="fg jb" style="flex-wrap:wrap;gap:6px">
+          <div>
+            <div style="font-size:12px;font-weight:500">Advance of ${fmtP(a.amount)}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">
+              Given: ${toDD(a.dateGiven)||'--'} &middot; Starts: ${fmtYM(a.deductStart)||'--'} &middot; Default: ${fmtP(a.monthlyDeduct)}/mo
+              ${thisMonthNote}
+            </div>
+            <div style="font-size:11px;color:var(--text3)">Remaining: <strong>${fmtP(a.remaining)}</strong> &middot; Status: ${st2}</div>
+          </div>
+          <div class="fg" style="gap:5px;flex-wrap:wrap">
+            <button class="btn btn-xs" onclick="advCustom('${st.id}',${ai})">This month</button>
+            <button class="btn btn-xs" onclick="advSkip('${st.id}',${ai})">Skip month</button>
+            <button class="btn btn-xs" onclick="advEditDefault('${st.id}',${ai})">Edit default</button>
+            <button class="btn btn-xs" onclick="advForgive('${st.id}',${ai})">Forgive</button>
+          </div>
+        </div>
+        ${(a.history||[]).length?`<div style="margin-top:8px;border-top:1px solid rgba(0,0,0,.06);padding-top:6px">${(a.history||[]).slice(-3).reverse().map(h=>`<div style="font-size:11px;color:var(--text3);display:flex;justify-content:space-between"><span>${fmtYM(h.month)}</span><span>${h.skipped?'<span style="color:var(--warn)">Skipped</span>':'-'+fmtP(h.amount)}</span></div>`).join('')}</div>`:''}
+      </div>`;}).join('');
     return`<div class="card">
       <div class="fg jb" style="flex-wrap:wrap;gap:8px">
         <div>
@@ -1097,16 +1141,16 @@ function rStaff(){
         </div>
         <div style="text-align:right">
           <div style="font-size:18px;font-weight:500">${fmtP(st.salary)}<span style="font-size:12px;color:var(--text3)">/mo</span></div>
-          ${ded>0?`<div style="font-size:12px;color:var(--warn)">Net this month: ${fmtP(st.salary-ded)}</div>`:''}
+          ${ded>0?`<div style="font-size:13px;color:var(--warn);font-weight:500">Net this month: ${fmtP(net)}</div><div style="font-size:11px;color:var(--text3)">Advance deduction: -${fmtP(ded)}</div>`:''}
           <div style="font-size:11px;color:var(--text3)">Due: day ${st.dueDay}${st.weekendRule?' (Thu if Fri/Sat)':''}</div>
         </div>
       </div>
-      ${adv.map(a=>`<div style="font-size:12px;background:#FEF3C7;padding:6px 10px;border-radius:8px;margin-top:8px">Advance: ${fmtP(a.amount)} &middot; ${fmtP(a.remaining)} remaining &middot; ${fmtP(a.monthlyDeduct)}/mo</div>`).join('')}
-      ${st.notes?`<div style="font-size:12px;color:var(--text3);margin-top:6px">${h(st.notes)}</div>`:''}
+      ${advHtml}
+      ${st.notes?`<div style="font-size:12px;color:var(--text3);margin-top:8px">${h(st.notes)}</div>`:''}
       <div class="div" style="margin:10px 0 8px"></div>
       <div class="fg" style="flex-wrap:wrap;gap:6px">
-        <button class="btn btn-xs" onclick="logAdv('${st.id}')">+ Log advance</button>
-        <button class="btn btn-xs btn-d" onclick="delStaff('${st.id}')">Remove</button>
+        <button class="btn btn-xs btn-p" onclick="logAdv('${st.id}')">+ Log advance</button>
+        <button class="btn btn-xs btn-d" onclick="delStaff('${st.id}')">Remove staff</button>
       </div>
     </div>`;}).join('')||'<div class="empty">No household staff profiles yet.</div>';
   return`
@@ -1141,12 +1185,54 @@ function addStaff(){
 }
 function delStaff(id){S.staff=S.staff.filter(x=>x.id!==id);sched();render();}
 function logAdv(sid){
-  const amt=parseFloat(prompt('Advance amount (SAR)?')||'0');if(!amt||amt<=0)return;
-  const months=parseInt(prompt('Recovery over how many months?')||'1');if(!months||months<=0)return;
   const st=S.staff.find(x=>x.id===sid);if(!st)return;
+  const amt=parseFloat(prompt('Advance amount (SAR)?')||'0');if(!amt||amt<=0)return;
+  const dateGiven=prompt('Date given (DD/MM/YYYY)?',toDD(new Date().toISOString().substr(0,10)))||'';
+  const deductStartRaw=prompt('Deduction starts which month? (MM/YYYY)',((d=new Date())=>{ d.setMonth(d.getMonth()+1);return String(d.getMonth()+1).padStart(2,'0')+'/'+d.getFullYear();})() )||'';
+  let deductStart=getYM(new Date());
+  if(deductStartRaw&&deductStartRaw.includes('/')){const[m,y]=deductStartRaw.split('/');deductStart=y+'-'+m.padStart(2,'0');}
+  const monthly=parseFloat(prompt('Monthly deduction (SAR)?', Math.round(amt/6*100)/100)||'0');if(!monthly||monthly<=0)return;
   if(!st.advances)st.advances=[];
-  st.advances.push({id:uid(),amount:amt,months,monthlyDeduct:Math.round(amt/months*100)/100,remaining:amt,startMonth:S.month});
+  st.advances.push({id:uid(),amount:amt,dateGiven:fromDD(dateGiven),deductStart,monthlyDeduct:monthly,remaining:amt,status:'active',history:[]});
   sched();render();toast('Advance logged');
+}
+function advCustom(sid,ai){
+  const st=S.staff.find(x=>x.id===sid);if(!st)return;
+  const a=st.advances[ai];if(!a)return;
+  const now=getYM(new Date());
+  const amt=parseFloat(prompt(`Custom deduction for ${fmtYM(now)} (SAR)? Default is ${a.monthlyDeduct}.`)||'0');
+  if(isNaN(amt)||amt<0)return;
+  if(!a.history)a.history=[];
+  const i=a.history.findIndex(h=>h.month===now);
+  if(i>=0)a.history[i]={month:now,amount:amt,skipped:false};
+  else a.history.push({month:now,amount:amt,skipped:false});
+  a.remaining=Math.max(0,a.remaining-(amt-(a.history.find(h=>h.month===now&&h._prev)||0)));
+  sched();render();toast('Custom deduction set for '+fmtYM(now));
+}
+function advSkip(sid,ai){
+  const st=S.staff.find(x=>x.id===sid);if(!st)return;
+  const a=st.advances[ai];if(!a)return;
+  const now=getYM(new Date());
+  if(!a.history)a.history=[];
+  const i=a.history.findIndex(h=>h.month===now);
+  if(i>=0)a.history[i]={month:now,amount:0,skipped:true};
+  else a.history.push({month:now,amount:0,skipped:true});
+  sched();render();toast(fmtYM(now)+' deduction skipped');
+}
+function advEditDefault(sid,ai){
+  const st=S.staff.find(x=>x.id===sid);if(!st)return;
+  const a=st.advances[ai];if(!a)return;
+  const v=parseFloat(prompt('New default monthly deduction (SAR)?',a.monthlyDeduct)||'0');
+  if(!v||v<=0)return;
+  a.monthlyDeduct=v;
+  sched();render();toast('Default deduction updated to '+fmt(v)+'/mo');
+}
+function advForgive(sid,ai){
+  const st=S.staff.find(x=>x.id===sid);if(!st)return;
+  const a=st.advances[ai];if(!a)return;
+  if(!confirm('Mark this advance as forgiven? The remaining balance will be cleared.'))return;
+  a.remaining=0;a.status='forgiven';
+  sched();render();toast('Advance forgiven');
 }
 
 // --- ACCOUNTS ---
