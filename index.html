@@ -691,7 +691,7 @@ function buildCatModal(){
 function onCatMainChange(){
   const mainId=document.getElementById('catm-main').value;
   const sugg=SUGGESTED[mainId]||[];
-  const suggPills=sugg.map(sid=>{const s=getSubCat(sid);return s?'<button class="s-pill" onclick="pickSuggestedSub(''+s.id+'')" id="spill_'+s.id+'">'+s.name+'</button>':'';}).join('');
+  const suggPills=sugg.map(sid=>{const s=getSubCat(sid);if(!s)return '';return `<button class="s-pill" data-sid="${s.id}" onclick="pickSuggestedSub(this.dataset.sid)" id="spill_${s.id}">${s.name}</button>`;}).join('');
   document.getElementById('catm-suggested').innerHTML=suggPills;
   const subSel=document.getElementById('catm-sub');
   subSel.innerHTML=SUB_CATS.map(s=>'<option value="'+s.id+'">'+s.name+'</option>').join('');
