@@ -2820,6 +2820,10 @@ function doRefExport(){
   MAIN_CATS.forEach(m=>lines.push(`| ${m.name} | ${m.id} | ${m.type} |`));
   lines.push('','SUB-CATEGORIES ('+SUB_CATS.length+')','| Sub-Category | Sub ID |','|---|---|');
   SUB_CATS.forEach(s=>lines.push(`| ${s.name} | ${s.id} |`));
+  // Sadad codes for extraction sessions
+  lines.push('','SADAD BILLER CODES','Al Rajhi formats as "Sadad W#NNN" — NNN is the biller code below.','| Code | Biller Name |','|---|---|');
+  Object.entries(SADAD_CODES).sort((a,b)=>parseInt(a[0])-parseInt(b[0])).forEach(([code,name])=>lines.push(`| ${code} | ${name} |`));
+  lines.push('','SADAD EXTRACTION RULE','- "Sadad W#NNN" or "Sadad Payment NNN" — strip prefix, look up code above.','- Use biller name as description, not raw code string.','- category_id: cat_main_housing for utilities (SEC, NWC, Marafiq, municipality)','- category_id: cat_main_subscriptions for telecom (STC, Mobily, Zain)','- Do NOT flag as unconfirmed if code is in the list above.');
   const blob=new Blob([lines.join('\n')],{type:'text/plain'});
   const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='blueprint_ref_'+new Date().toISOString().substr(0,10)+'.txt';a.click();URL.revokeObjectURL(url);
   S.settings.lastBackup=new Date().toISOString();sched();toast('Reference file downloaded');
