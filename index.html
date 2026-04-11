@@ -3028,13 +3028,17 @@ Generate 5-8 insights covering: savings rate, spending trends, debt management, 
     });
 
     const data=await resp.json();
+    // Check for API-level errors
+    if(data.error){throw new Error('API error: '+data.error.message);}
     const raw=data.content?.[0]?.text||'';
+    if(!raw){throw new Error('Empty response from API. Data: '+JSON.stringify(data).substring(0,200));}
     let result;
     try{
       const cleaned=raw.replace(/```json|```/g,'').trim();
       result=JSON.parse(cleaned);
     }catch(e){
-      throw new Error('Could not parse AI response');
+      // Show the raw response so we can debug
+      throw new Error('Parse failed. Raw response: '+raw.substring(0,300));
     }
 
     renderAIInsights(result,snapshot);
