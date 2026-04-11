@@ -3018,7 +3018,7 @@ Generate 5-8 insights covering: savings rate, spending trends, debt management, 
   try{
     const resp=await fetch('https://dgefsppkijrrvotggeom.supabase.co/functions/v1/ai-proxy',{
       method:'POST',
-      headers:{'Content-Type':'application/json','Authorization':'Bearer '+SK},
+      headers:{'Content-Type':'application/json','Authorization':'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRnZWZzcHBraWpycnZvdGdnZW9tIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU4MzYyOTAsImV4cCI6MjA5MTQxMjI5MH0._MWK5XL_CQAV3ybEWPv1UrArPb-Enu6FZognyImSYzg'},
       body:JSON.stringify({
         model:'claude-sonnet-4-20250514',
         max_tokens:1500,
