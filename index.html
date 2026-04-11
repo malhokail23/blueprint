@@ -547,7 +547,7 @@ function defOwners(){return[{id:'owner_self',name:'Self'}];}
 let S={
   tab:'overview',month:getYM(new Date()),dashOwner:'owner_self',privacy:false,ovPeriod:'month',
   owners:[],accounts:[],debts:[],goals:[],income:[],bills:[],subs:[],staff:[],
-  rules:[],dismissed:[],deletedCats:[],deletedSubs:[],txnCache:{},monthlyBal:{},
+  rules:[],dismissed:[],deletedCats:[],deletedSubs:[],txnCache:{},monthlyBal:{},matchedPairs:[],
   settings:{currency:'SAR',savingsTarget:20,backupReminderMonths:2,lastBackup:null},
   version:VERSION
 };
@@ -623,7 +623,7 @@ function getMainP(){
     version:VERSION,
     accounts:S.accounts,debts:S.debts,goals:S.goals,income:S.income,
     bills:S.bills,subs:S.subs,staff:S.staff,rules:S.rules,dismissed:S.dismissed,
-    deletedCats:S.deletedCats,deletedSubs:S.deletedSubs,owners:S.owners,settings:S.settings,monthlyBal:S.monthlyBal
+    deletedCats:S.deletedCats,deletedSubs:S.deletedSubs,owners:S.owners,settings:S.settings,monthlyBal:S.monthlyBal,matchedPairs:S.matchedPairs
   };
 }
 function restoreS(d){
@@ -633,7 +633,7 @@ function restoreS(d){
   S.dismissed=d.dismissed||[];
   S.deletedCats=d.deletedCats||[];S.deletedSubs=d.deletedSubs||[];
   S.owners=d.owners&&d.owners.length?d.owners:defOwners();
-  S.settings={currency:'SAR',savingsTarget:20,backupReminderMonths:2,lastBackup:null,...(d.settings||{})};  S.monthlyBal=d.monthlyBal||{};
+  S.settings={currency:'SAR',savingsTarget:20,backupReminderMonths:2,lastBackup:null,...(d.settings||{})};  S.monthlyBal=d.monthlyBal||{};  S.matchedPairs=d.matchedPairs||[];
   // txnCache stays separate - loaded in loadS
   applyDeletions();
 }
@@ -725,7 +725,8 @@ async function flushTxnQueue(){
 
 function allTxns(){return Object.values(S.txnCache).flat();}
 function uncatCount(){return allTxns().filter(t=>(!t.mainCatId||!getMC(t.mainCatId))&&!t.flagged&&(t.type==='expense'||t.type==='income')).length;}
-function updateBadge(){const c=uncatCount();const b=document.getElementById('uncat-badge');if(b){b.textContent=c;b.style.display=c>0?'':'none';}}
+function pendingTransferCount(){return getPendingTransfers().filter(t=>!t.transferDismissed).length;}
+function updateBadge(){const c=uncatCount()+pendingTransferCount();const b=document.getElementById('uncat-badge');if(b){b.textContent=c;b.style.display=c>0?'':'none';}}
 
 // ─── NAV ───
 function toggleGroup(g){
@@ -818,10 +819,15 @@ async function rOv(){
   const ownerOk=S.dashOwner&&S.owners.find(o=>o.id===S.dashOwner);
   const tx=ownerOk?allT.filter(t=>t.accountId&&ai.has(t.accountId)):allT;
   const pTx=ownerOk?prevT.filter(t=>t.accountId&&ai.has(t.accountId)):prevT;
+  // Owner-filtered versions of all data arrays
+  const fDebts=ownerOk?S.debts.filter(d=>d.owner===S.dashOwner):S.debts;
+  const fGoals=ownerOk?S.goals.filter(g=>g.owner===S.dashOwner):S.goals;
+  const fStaff=ownerOk?S.staff:S.staff; // staff has no owner field — show all
+  const fIncome=ownerOk?S.income:S.income; // income has no owner field
   const n=months.length;
 
   // Core metrics
-  const inc=tx.filter(t=>txDir(t)==='in').reduce((s,t)=>s+t.amount,0);
+  const inc=tx.filter(t=>txDir(t)==='in'&&!isMatched(t.id)).reduce((s,t)=>s+t.amount,0);
   const exp=tx.filter(t=>txDir(t)==='out'&&t.type==='expense').reduce((s,t)=>s+t.amount,0);
   const inv=tx.filter(t=>txDir(t)==='out'&&t.type==='investment').reduce((s,t)=>s+t.amount,0);
   const ext=tx.filter(t=>txDir(t)==='out'&&t.type==='external_transfer').reduce((s,t)=>s+t.amount,0);
@@ -829,7 +835,7 @@ async function rOv(){
   const tgt=S.settings.savingsTarget||20;
   const sr=inc>0?Math.round((net/inc)*100):0;
   const srCol=sr>=tgt?'c-ok':sr>=10?'c-warn':'c-bad';
-  const td=S.debts.filter(d=>d.status==='active').reduce((s,d)=>s+(d.type==='credit_card'?calcCCBalance(d):(d.remaining||0)),0);
+  const td=fDebts.filter(d=>d.status==='active').reduce((s,d)=>s+(d.type==='credit_card'?calcCCBalance(d):(d.remaining||0)),0);
   const avgMonthlyExp=n>0?exp/n:0;
   // Emergency buffer: cash in current accounts / avg monthly expenses
   const cashAccTypes=new Set(['main_account','savings_account','sub_account','debit_card','prepaid_card','cash']);
@@ -840,7 +846,7 @@ async function rOv(){
   const ebRatio=avgMonthlyExp>0&&totalLiquidCash>0?Math.round(totalLiquidCash/avgMonthlyExp*10)/10:null;
 
   // DTI
-  const monthlyDebt=S.debts.filter(d=>d.status==='active').reduce((s,d)=>s+(d.type==='credit_card'?(d.minPayment||0):(d.installment||0)),0);
+  const monthlyDebt=fDebts.filter(d=>d.status==='active').reduce((s,d)=>s+(d.type==='credit_card'?(d.minPayment||0):(d.installment||0)),0);
   const avgInc=n>0?inc/n:inc;
   const dti=avgInc>0?Math.round(monthlyDebt/avgInc*100):0;
   const dtiCol=dti<30?'c-ok':dti<=40?'c-warn':'c-bad';
@@ -907,7 +913,7 @@ async function rOv(){
   window._cd={labels:cL,inc:cI,exp:cE,inv:cV,deficit:cDeficit};
 
   // Debt cards
-  const actDebts=S.debts.filter(d=>d.status==='active');
+  const actDebts=fDebts.filter(d=>d.status==='active');
   const dHtml=actDebts.slice(0,4).map(d=>{
     const paid=(d.original||0)-(d.remaining||0);const p=d.original>0?Math.min(100,Math.round(paid/d.original*100)):0;
     let projDate='--';
@@ -950,7 +956,7 @@ async function rOv(){
     </div>`;}).join('')||'<div style="font-size:var(--fs-xs);color:var(--text3);padding:8px 0">No bills defined.</div>';
 
   // Goals
-  const gHtml=S.goals.filter(g=>g.status==='active').slice(0,3).map(g=>{
+  const gHtml=fGoals.filter(g=>g.status==='active').slice(0,3).map(g=>{
     const p=g.target>0?Math.min(100,Math.round(g.saved/g.target*100)):0;
     return`<div style="margin-bottom:10px">
       <div class="fg jb" style="font-size:var(--fs-xs)"><span>${h(g.name)}</span><span style="color:var(--text3)">${p}%</span></div>
@@ -985,9 +991,9 @@ async function rOv(){
   // Forecast: next 30/60/90 days
   function fcastCol(ym){
     const mInc=S.income.filter(i=>i.status==='active').reduce((s,i)=>s+(i.frequency==='Monthly'?i.amount:0),0);
-    const mDebt=S.debts.filter(d=>d.status==='active').reduce((s,d)=>s+(d.installment||0),0);
+    const mDebt=fDebts.filter(d=>d.status==='active').reduce((s,d)=>s+(d.installment||0),0);
     const mBills=S.bills.reduce((s,b)=>s+(b.billingCycle==='Monthly'?b.fixedAmount||0:0),0);
-    const mStaff=S.staff.reduce((s,st)=>s+(st.salary||0),0);
+    const mStaff=fStaff.reduce((s,st)=>s+(st.salary||0),0);
     const total=mDebt+mBills+mStaff;
     return{inc:mInc,out:total,net:mInc-total};
   }
@@ -1181,12 +1187,12 @@ async function rOv(){
     <div class="card card-bordered">
       <div class="ctitle">Household Staff</div>
       <div class="csub">Current month — after advance deductions</div>
-      ${S.staff.map(st=>{
+      ${fStaff.map(st=>{
         function advThisMonthOv(st2){const nw=getYM(new Date());return(st2.advances||[]).filter(a=>{const st3=a.status==='settled'||a.status==='forgiven'?a.status:(a.remaining<=0?'settled':(a.deductStart&&a.deductStart>nw?'pending':'active'));return st3==='active';}).reduce((s,a)=>{const ov=(a.history||[]).find(h=>h.month===nw);if(ov)return s+(ov.skipped?0:ov.amount);return s+(a.monthlyDeduct||0);},0);}
         const ded=advThisMonthOv(st);
         return`<div class="brow"><div><div style="font-size:var(--fs-xs);font-weight:500">${h(st.name)}</div><div style="font-size:11px;color:var(--text3)">${st.role}</div></div><span style="font-size:var(--fs-xs);font-weight:500">${fmtP(st.salary-ded)}</span></div>`;
       }).join('')||'<div style="font-size:var(--fs-xs);color:var(--text3);padding:8px 0">No staff profiles defined.</div>'}
-      ${S.staff.length?`<div style="font-size:11px;color:var(--text3);margin-top:6px;padding-top:6px;border-top:1px solid var(--bg3)">Staff cost: ${fmtP(S.staff.reduce((s,st)=>s+st.salary,0))} · ${exp>0?Math.round(S.staff.reduce((s,st)=>s+st.salary,0)/exp*100)+'% of expenses':'--'}</div>`:''}
+      ${fStaff.length?`<div style="font-size:11px;color:var(--text3);margin-top:6px;padding-top:6px;border-top:1px solid var(--bg3)">Staff cost: ${fmtP(fStaff.reduce((s,st)=>s+st.salary,0))} · ${exp>0?Math.round(fStaff.reduce((s,st)=>s+st.salary,0)/exp*100)+'% of expenses':'--'}</div>`:''}
     </div>
   </div>
 
@@ -1194,7 +1200,7 @@ async function rOv(){
   <div class="slbl">Active Goals</div>
   <div class="card card-bordered">
     ${gHtml}
-    ${S.goals.filter(g=>g.status==='active').length>3?`<div style="font-size:var(--fs-xs);color:var(--info);cursor:pointer;margin-top:6px" onclick="sw('goals')">View all →</div>`:''}
+    ${fGoals.filter(g=>g.status==='active').length>3?`<div style="font-size:var(--fs-xs);color:var(--info);cursor:pointer;margin-top:6px" onclick="sw('goals')">View all →</div>`:''}
   </div>
 
   <!-- S8: EXTERNAL TRANSFERS -->
@@ -1239,8 +1245,8 @@ async function rTx(){
   if(TF.mc)fl=fl.filter(t=>t.mainCatId===TF.mc);
   if(TF.acc)fl=fl.filter(t=>t.accountId===TF.acc);
   if(TF.q){const q=TF.q.toLowerCase();fl=fl.filter(t=>(t.description||'').toLowerCase().includes(q)||(t.raw_description||'').toLowerCase().includes(q));}
-  const inc=fl.filter(t=>txDir(t)==='in').reduce((s,t)=>s+t.amount,0);
-  const out=fl.filter(t=>txDir(t)==='out').reduce((s,t)=>s+t.amount,0);
+  const inc=fl.filter(t=>txDir(t)==='in'&&!isMatched(t.id)).reduce((s,t)=>s+t.amount,0);
+  const out=fl.filter(t=>txDir(t)==='out'&&!isMatched(t.id)).reduce((s,t)=>s+t.amount,0);
   // Build running balance map for transactions in this month, per account
   const rbMaps={};
   const accIds=[...new Set(fl.map(t=>t.accountId).filter(Boolean))];
@@ -1254,13 +1260,16 @@ async function rTx(){
     const debt=t.debtId?S.debts.find(d=>d.id===t.debtId):null;
     const dir=txDir(t);
     const ac=dir==='in'?'c-ok':(t.type==='external_transfer'?'c-ext':(t.type==='investment'?'c-inv':'c-bad'));
+    const isMatchedTxn=isMatched(t.id);
+    const matchedTag=isMatchedTxn?'<span class="badge b-tr" style="font-size:10px;margin-left:4px" title="Matched with transfer from another account">&#8646; Matched</span>':'';
+    const pendingTag=(!isMatchedTxn&&(t.type==='transfer'||t.type==='external_transfer')&&!t.transferDismissed)?'<span class="badge" style="background:#FEF3C7;color:#92400E;font-size:10px;margin-left:4px">Pending match</span>':'';
     const ch=(t.mainCatId&&getMC(t.mainCatId))?ctag(t.mainCatId,t.subCatId):'<span style="color:var(--warn);font-size:11px">&#9888; Uncategorized</span>';
     const st=t.isSub?`<span class="stag">SUB <button onclick="event.stopPropagation();removeSub('${t.id}','${ym}')" style="background:none;border:none;cursor:pointer;color:inherit;padding:0;margin-left:2px;font-size:9px;line-height:1;vertical-align:middle" title="Remove subscription tag">&#10005;</button></span>`:'';
     const ym=t.date?t.date.substr(0,7):S.month;
     const rb=t.accountId&&rbMaps[t.accountId]?rbMaps[t.accountId].get(t.id):null;
     return`<tr>
       <td style="color:var(--text3);white-space:nowrap;font-size:var(--fs-xs)">${toDD(t.date)}</td>
-      <td><div>${h(t.description)}${st}${debt?` <span style="font-size:11px;color:var(--warn)">[${debt.name}]</span>`:''}</div>${t.notes?`<div style="font-size:11px;color:var(--text3)">${h(t.notes)}</div>`:''}</td>
+      <td><div>${h(t.description)}${st}${matchedTag}${pendingTag}${debt?` <span style="font-size:11px;color:var(--warn)">[${debt.name}]</span>`:''}</div>${t.notes?`<div style="font-size:11px;color:var(--text3)">${h(t.notes)}</div>`:''}</td>
       <td>${ch}</td>
       <td style="font-size:var(--fs-xs)">${acc?`${acc.name} ${ob(acc.owner)}`:''}</td>
       <td style="text-align:right;font-weight:500;white-space:nowrap" class="${ac}">${dir==='in'?'+':'-'}${fmtP(t.amount)}</td>
@@ -1428,6 +1437,204 @@ async function saveEditTxn(){
 function closeEditTxn(){
   document.getElementById('edit-txn-modal').classList.remove('active');
 }
+// ─── TRANSFER MATCHING ENGINE ───
+
+// Returns true if txn is part of a matched pair
+function isMatched(txnId){
+  return S.matchedPairs.some(p=>p.outId===txnId||p.inId===txnId);
+}
+
+// Run matching on a newly imported batch of transactions
+// Tries to pair new transfers with existing unmatched transfers across all months
+function runTransferMatching(newTxns){
+  const allT=allTxns();
+  const newTransfers=newTxns.filter(t=>t.type==='transfer'||t.type==='external_transfer');
+
+  newTransfers.forEach(t=>{
+    if(isMatched(t.id))return;
+    const tDir=txDir(t);
+    // Look for an opposing unmatched transfer: same amount, opposite direction,
+    // different account, within ±2 days
+    const tDate=new Date(t.date);
+    const match=allT.find(other=>{
+      if(other.id===t.id)return false;
+      if(isMatched(other.id))return false;
+      if((other.type!=='transfer'&&other.type!=='external_transfer'))return false;
+      if(other.accountId===t.accountId)return false; // must be different account
+      if(Math.abs(other.amount-t.amount)>0.01)return false; // same amount
+      if(txDir(other)===tDir)return false; // must be opposite direction
+      const oDate=new Date(other.date);
+      const dayDiff=Math.abs((tDate-oDate)/(1000*60*60*24));
+      return dayDiff<=2;
+    });
+
+    if(match){
+      const outTxn=tDir==='out'?t:match;
+      const inTxn=tDir==='in'?t:match;
+      S.matchedPairs.push({
+        id:'mp_'+uid(),
+        outId:outTxn.id,
+        inId:inTxn.id,
+        amount:t.amount,
+        date:t.date,
+        outAccId:outTxn.accountId,
+        inAccId:inTxn.accountId,
+        matchedAt:new Date().toISOString(),
+        confirmedBy:'auto'
+      });
+    }
+  });
+}
+
+// Get all unmatched transfers (pending match)
+function getPendingTransfers(){
+  return allTxns().filter(t=>{
+    if(t.type!=='transfer'&&t.type!=='external_transfer')return false;
+    if(isMatched(t.id))return false;
+    return true;
+  });
+}
+
+// Manually match two transactions
+function manualMatch(outId,inId){
+  const allT=allTxns();
+  const out=allT.find(t=>t.id===outId);
+  const inn=allT.find(t=>t.id===inId);
+  if(!out||!inn){toast('Transaction not found',false);return;}
+  // Remove any existing pending for these
+  S.matchedPairs=S.matchedPairs.filter(p=>p.outId!==outId&&p.inId!==inId&&p.outId!==inId&&p.inId!==outId);
+  S.matchedPairs.push({
+    id:'mp_'+uid(),
+    outId,inId,
+    amount:out.amount,
+    date:out.date,
+    outAccId:out.accountId,
+    inAccId:inn.accountId,
+    matchedAt:new Date().toISOString(),
+    confirmedBy:'manual'
+  });
+  sched();render();toast('Transactions matched');
+}
+
+// Unmatch a pair
+function unmatch(pairId){
+  S.matchedPairs=S.matchedPairs.filter(p=>p.id!==pairId);
+  sched();render();toast('Match removed');
+}
+
+// Render transfer matching tab section (called from rUncat or standalone)
+function rTransferMatching(){
+  const pending=getPendingTransfers();
+  const pairs=S.matchedPairs;
+
+  // Pending section
+  const pendRows=pending.length?pending.map(t=>{
+    const acc=S.accounts.find(a=>a.id===t.accountId);
+    const dir=txDir(t);
+    const ym=t.date.substr(0,7);
+    return`<tr>
+      <td style="color:var(--text3);font-size:var(--fs-xs);white-space:nowrap">${toDD(t.date)}</td>
+      <td><div style="font-size:var(--fs-xs);font-weight:500">${h(t.description)}</div></td>
+      <td style="font-size:var(--fs-xs)">${acc?.name||'--'} ${ob(acc?.owner)}</td>
+      <td class="${dir==='out'?'c-bad':'c-ok'}" style="text-align:right;font-weight:500;white-space:nowrap">${dir==='out'?'-':'+'}${fmtP(t.amount)}</td>
+      <td><span class="badge" style="background:#FEF3C7;color:#92400E">Pending</span></td>
+      <td><button class="btn btn-xs" onclick="showMatchPicker('${t.id}')">Match manually</button>
+          <button class="btn btn-xs btn-d" onclick="dismissTransfer('${t.id}','${ym}')">Dismiss</button></td>
+    </tr>`;}).join(''):`<tr><td colspan="6" class="empty">&#10003; No pending unmatched transfers</td></tr>`;
+
+  // Matched pairs section
+  const pairRows=pairs.length?pairs.slice().reverse().slice(0,20).map(p=>{
+    const outAcc=S.accounts.find(a=>a.id===p.outAccId);
+    const inAcc=S.accounts.find(a=>a.id===p.inAccId);
+    return`<tr>
+      <td style="color:var(--text3);font-size:var(--fs-xs);white-space:nowrap">${toDD(p.date)}</td>
+      <td style="font-size:var(--fs-xs)">${outAcc?.name||'--'} <span style="color:var(--text3)">&#8594;</span> ${inAcc?.name||'--'}</td>
+      <td style="font-weight:500;white-space:nowrap">${fmtP(p.amount)}</td>
+      <td><span class="badge b-tr">${p.confirmedBy==='auto'?'Auto-matched':'Manually matched'}</span></td>
+      <td><button class="btn btn-xs btn-d" onclick="unmatch('${p.id}')">Unmatch</button></td>
+    </tr>`;}).join(''):`<tr><td colspan="5" class="empty">No matched pairs yet</td></tr>`;
+
+  return`
+  <div class="slbl" style="margin-top:1.5rem">Transfer Matching</div>
+  <div class="shint">Internal transfers between your own accounts are matched so they do not inflate Total In / Total Out. Unmatched transfers appear below until the other side is imported.</div>
+
+  <div class="slbl" style="margin-top:.5rem">Pending Matches (${pending.length})</div>
+  <div class="card"><div class="tbl-wrap"><table>
+    <thead><tr><th>Date</th><th>Description</th><th>Account</th><th style="text-align:right">Amount</th><th>Status</th><th></th></tr></thead>
+    <tbody>${pendRows}</tbody>
+  </table></div></div>
+
+  <div class="slbl">Confirmed Matches (${pairs.length})</div>
+  <div class="card"><div class="tbl-wrap"><table>
+    <thead><tr><th>Date</th><th>From &#8594; To</th><th>Amount</th><th>How matched</th><th></th></tr></thead>
+    <tbody>${pairRows}</tbody>
+  </table></div></div>
+
+  <!-- Manual match picker panel -->
+  <div id="match-picker-panel" class="panel" style="display:none">
+    <div class="chdr">Match manually</div>
+    <div style="font-size:var(--fs-xs);color:var(--text3);margin-bottom:10px" id="match-picker-desc">Select the corresponding transfer from another account.</div>
+    <div id="match-picker-list"></div>
+    <button class="btn btn-sm" style="margin-top:8px" onclick="document.getElementById('match-picker-panel').style.display='none'">Cancel</button>
+  </div>`;
+}
+
+let _matchPickerSourceId=null;
+function showMatchPicker(srcId){
+  _matchPickerSourceId=srcId;
+  const allT=allTxns();
+  const src=allT.find(t=>t.id===srcId);if(!src)return;
+  const srcDir=txDir(src);
+  const srcDate=new Date(src.date);
+
+  // Find candidates: opposite direction, different account, same amount ±5%, within ±3 days
+  const candidates=allT.filter(t=>{
+    if(t.id===srcId)return false;
+    if(isMatched(t.id))return false;
+    if(t.type!=='transfer'&&t.type!=='external_transfer')return false;
+    if(t.accountId===src.accountId)return false;
+    if(txDir(t)===srcDir)return false;
+    const dayDiff=Math.abs((new Date(t.date)-srcDate)/(1000*60*60*24));
+    return dayDiff<=3;
+  }).sort((a,b)=>Math.abs(a.amount-src.amount)-Math.abs(b.amount-src.amount));
+
+  const panel=document.getElementById('match-picker-panel');
+  const list=document.getElementById('match-picker-list');
+  const desc=document.getElementById('match-picker-desc');
+  if(!panel||!list||!desc)return;
+
+  desc.textContent=`Matching: ${src.description} — ${fmtS(src.amount)} on ${toDD(src.date)}. Select the other side:`;
+
+  if(!candidates.length){
+    list.innerHTML='<div style="font-size:var(--fs-xs);color:var(--text3);padding:8px 0">No candidates found. Import the other account statement first.</div>';
+  }else{
+    list.innerHTML=candidates.map(t=>{
+      const acc=S.accounts.find(a=>a.id===t.accountId);
+      const amtDiff=Math.abs(t.amount-src.amount);
+      return`<div class="fg jb" style="padding:8px 0;border-bottom:1px solid var(--bg3)">
+        <div>
+          <div style="font-size:var(--fs-xs);font-weight:500">${h(t.description)}</div>
+          <div style="font-size:11px;color:var(--text3)">${acc?.name||'--'} · ${toDD(t.date)} · ${fmtP(t.amount)}${amtDiff>0.01?` <span style="color:var(--warn)">(diff: ${fmtP(amtDiff)})</span>`:''}</div>
+        </div>
+        <button class="btn btn-xs btn-p" onclick="confirmManualMatch('${srcDir==='out'?srcId:t.id}','${srcDir==='in'?srcId:t.id}')">Match</button>
+      </div>`;}).join('');
+  }
+  panel.style.display='block';
+  panel.scrollIntoView({behavior:'smooth'});
+}
+
+function confirmManualMatch(outId,inId){
+  document.getElementById('match-picker-panel').style.display='none';
+  manualMatch(outId,inId);
+}
+
+function dismissTransfer(txnId,ym){
+  // Mark as dismissed so it no longer appears in pending
+  const t=(S.txnCache[ym]||[]).find(x=>x.id===txnId);
+  if(t)t.transferDismissed=true;
+  schedTxn(ym);sched();render();toast('Transfer dismissed from pending list');
+}
+
 function prefillOpeningBal(){
   const accId=document.getElementById('imp-acc-override')?.value||null;
   const inp=document.getElementById('imp-opening-bal');
@@ -1550,6 +1757,7 @@ async function doImport(){
     }else{toast(`Imported ${added} transaction${added!==1?'s':''}. Balance guard passed ✓`);if(rId){const mk=rId+'_'+ym;if(!S.monthlyBal[mk])S.monthlyBal[mk]={};S.monthlyBal[mk].closing=closingBal;}}
   }
 
+  runTransferMatching(txns);
   sched(); // save monthlyBal
   if(ym!==S.month)S.month=ym;
   document.getElementById('imp-json').value='';
@@ -1659,7 +1867,8 @@ async function rUncat(){
   <div class="card"><div class="tbl-wrap"><table>
     <thead><tr><th>Date</th><th>Description / Current Category</th><th>Account</th><th style="text-align:right">Amount</th><th></th></tr></thead>
     <tbody>${fRows}</tbody>
-  </table></div></div>`:''}`;
+  </table></div></div>`:''}
+  ${rTransferMatching()}`;
 }
 async function cfmFlag(id,ym){
   const ymk=ym||S.month;
