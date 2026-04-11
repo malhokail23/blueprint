@@ -1397,13 +1397,15 @@ async function rTx(){
     </div>
     <div class="tbl-wrap"><table>
       <thead><tr>
-        ${['date','desc','cat','acc','amount','','type',''].map((col,i)=>{
-          const labels=['Date','Description','Category / Sub-Category','Account','Amount','Balance','Type',''];
-          if(!col)return`<th${i===5?' style="text-align:right"':''}>${labels[i]}</th>`;
+        ${(showBalance?['date','desc','cat','acc','amount','bal','type','']:['date','desc','cat','acc','amount','type','']).map((col,idx)=>{
+          const labels={date:'Date',desc:'Description',cat:'Category / Sub-Category',acc:'Account',amount:'Amount',bal:'Balance',type:'Type','':''};
+          const label=labels[col]||'';
+          if(!col)return'<th></th>';
+          if(col==='bal')return'<th style="text-align:right">Balance</th>';
           const active=TF.sortCol===col;
-          const arrow=active?(TF.sortDir===1?'↑':'↓'):'↕';
-          const style=i===4?'text-align:right;':'';
-          return`<th style="${style}cursor:pointer;user-select:none;white-space:nowrap" onclick="setTxSort('${col}')">${labels[i]} <span style="font-size:10px;opacity:${active?1:0.35}">${arrow}</span></th>`;
+          const arrow=active?(TF.sortDir===1?'\u2191':'\u2193'):'\u2195';
+          const style=col==='amount'?'text-align:right;':'';
+          return`<th style="${style}cursor:pointer;user-select:none;white-space:nowrap" onclick="setTxSort('${col}')">${label} <span style="font-size:10px;opacity:${active?1:0.35}">${arrow}</span></th>`;
         }).join('')}
       </tr></thead>
       <tbody>${rows}</tbody>
