@@ -597,12 +597,15 @@ function calcRunningBalance(txns,openingBal){
   return map;
 }
 function getAccountOpeningBal(accId,ym){
-  // Use the account's manual balance entry as opening if it matches the month
+  // Use the account's manually entered opening balance
+  // Reads openingBalance (stored by saveAcc)
   const acc=S.accounts.find(a=>a.id===accId);
-  if(!acc?.balance||!acc?.balanceAsOf)return 0;
-  const asOfYM=acc.balanceAsOf.substr(0,7);
-  // If the as-of date is in the same month or before, use it as opening
-  if(asOfYM<=ym)return acc.balance;
+  const bal=acc?.openingBalance??null;
+  const asOf=acc?.balanceAsOf||null;
+  if(bal===null||!asOf)return 0;
+  const asOfYM=asOf.substr(0,7);
+  // Only use as opening if the as-of date is before or in the same month
+  if(asOfYM<=ym)return bal;
   return 0;
 }
 function tbadge(t){const m={income:'<span class="badge b-in">Income</span>',expense:'<span class="badge b-out">Expense</span>',transfer:'<span class="badge b-tr">Transfer</span>',investment:'<span class="badge b-inv">Investment</span>',external_transfer:'<span class="badge b-ext">External Transfer</span>'};return m[t]||`<span class="badge b-grey">${t}</span>`;}
@@ -1236,7 +1239,7 @@ async function rTx(){
       <td>${ch}</td>
       <td style="font-size:var(--fs-xs)">${acc?`${acc.name} ${ob(acc.owner)}`:''}</td>
       <td style="text-align:right;font-weight:500;white-space:nowrap" class="${ac}">${dir==='in'?'+':'-'}${fmtP(t.amount)}</td>
-      <td style="text-align:right;font-size:var(--fs-xs);color:var(--text3);white-space:nowrap">${rb!==null?fmtP(rb):'--'}</td>
+      <td style="text-align:right;font-size:var(--fs-xs);white-space:nowrap" class="${rb!==null?(rb<0?'c-bad':'c-ok'):''}">${rb!==null?fmtS(rb):'--'}</td>
       <td>${tbadge(t.type)}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-xs" onclick="openCP('${t.id}','${ym}','${t.mainCatId||''}','${t.subCatId||''}')">Edit Cat</button>
@@ -1259,10 +1262,12 @@ async function rTx(){
   <div id="imp-panel" class="panel">
     <div class="chdr">Import from Claude Statement Analysis</div>
     <div style="font-size:var(--fs-xs);color:var(--text3);margin-bottom:10px;line-height:1.6">Share statements with Claude in this project → paste the JSON output below. Merchant rules apply automatically.</div>
-    <div class="fr" style="margin-bottom:8px">
-      <div><label class="lbl">Statement closing balance (SAR) — for audit</label><input type="number" id="imp-closing-bal" placeholder="Optional — enter closing balance from statement" step="0.01"></div>
+    <div class="fr3" style="margin-bottom:8px">
       <div><label class="lbl">Account</label><select id="imp-acc-override"><option value="">Auto-detect from JSON</option>${S.accounts.map(a=>`<option value="${a.id}">${a.name}</option>`).join('')}</select></div>
+      <div><label class="lbl">Opening balance (SAR) — start of month</label><input type="number" id="imp-opening-bal" placeholder="Balance on last day of previous month" step="0.01"></div>
+      <div><label class="lbl">Closing balance (SAR) — end of month</label><input type="number" id="imp-closing-bal" placeholder="Balance on last day of this statement" step="0.01"></div>
     </div>
+    <div style="font-size:var(--fs-xxs);color:var(--text3);margin-bottom:8px;line-height:1.5">Balance guard: opening + all transactions = closing. All types (income, expense, transfer) counted by direction. Discrepancy above SAR 1 is flagged.</div>
     <label class="lbl">JSON Data</label>
     <textarea id="imp-json" placeholder='{"account_id":"acc_xxx","month":"2026-03","transactions":[]}'></textarea>
     <div id="imp-err" style="font-size:var(--fs-xs);color:var(--bad);margin-top:6px;display:none"></div>
@@ -1385,18 +1390,21 @@ async function doImport(){
 
   // Balance guard
   const closingBal=parseFloat(document.getElementById('imp-closing-bal').value)||null;
+  const openingForGuard=parseFloat(document.getElementById('imp-opening-bal')?.value)||0;
   if(closingBal!==null&&rId){
     const allAccTx=txns.filter(t=>t.accountId===rId);
-    const calcBal=allAccTx.reduce((s,t)=>{if(t.type==='income')return s+t.amount;if(t.type==='transfer')return s;return s-t.amount;},0);
+    // Use direction as source of truth for ALL transaction types including transfers
+    const calcBal=openingForGuard+allAccTx.reduce((s,t)=>{return s+(txDir(t)==='in'?t.amount:-t.amount);},0);
     const diff=Math.abs(closingBal-calcBal);
     if(diff>1){
-      toast(`Balance guard: SAR ${diff.toFixed(2)} discrepancy detected. Check Uncategorized tab.`,false);
+      const guardMsg=`Balance guard: SAR ${diff.toFixed(2)} discrepancy. Opening: ${fmt(openingForGuard)} + txns = ${fmt(calcBal)}, statement says ${fmt(closingBal)}.`;
+      toast(guardMsg,false);
       txns.push({id:uid(),date:ym+'-01',description:'Balance Guard Alert — Discrepancy of SAR '+diff.toFixed(2),amount:0,type:'expense',mainCatId:null,subCatId:null,accountId:rId,flagged:true,notes:`Statement closing balance: ${closingBal}. Calculated: ${calcBal.toFixed(2)}`});
     }else{toast(`Imported ${added} transaction${added!==1?'s':''}. Balance guard passed ✓`);}
   }
 
   if(ym!==S.month)S.month=ym;
-  document.getElementById('imp-json').value='';document.getElementById('imp-closing-bal').value='';
+  document.getElementById('imp-json').value='';document.getElementById('imp-closing-bal').value='';if(document.getElementById('imp-opening-bal'))document.getElementById('imp-opening-bal').value='';
   tp('imp-panel');schedTxn(ym);render();
   if(closingBal===null)toast(`Imported ${added} transaction${added!==1?'s':''}${dapp?', '+dapp+' debt payments applied':''}`);
 }
