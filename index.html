@@ -2820,6 +2820,18 @@ function doRefExport(){
   MAIN_CATS.forEach(m=>lines.push(`| ${m.name} | ${m.id} | ${m.type} |`));
   lines.push('','SUB-CATEGORIES ('+SUB_CATS.length+')','| Sub-Category | Sub ID |','|---|---|');
   SUB_CATS.forEach(s=>lines.push(`| ${s.name} | ${s.id} |`));
+  // Merchant learning rules for extraction sessions
+  if(S.rules&&S.rules.length){
+    lines.push('','MERCHANT LEARNING RULES (apply these before categorizing)');
+    lines.push('If a transaction description contains any merchant below, use the mapped category and sub-category.');
+    lines.push('Only apply if you are confident the description matches. Leave category empty if uncertain.');
+    lines.push('| Merchant (contains) | Main Category ID | Sub-Category ID |','|---|---|---|');
+    S.rules.forEach(r=>{
+      const mc=MAIN_CATS.find(m=>m.id===r.mid);
+      const sc=SUB_CATS.find(s=>s.id===r.sid);
+      lines.push(`| ${r.m} | ${r.mid} (${mc?.name||'?'}) | ${r.sid||''} (${sc?.name||''}) |`);
+    });
+  }
   // Sadad codes for extraction sessions
   lines.push('','SADAD BILLER CODES','Al Rajhi formats as "Sadad W#NNN" — NNN is the biller code below.','| Code | Biller Name |','|---|---|');
   Object.entries(SADAD_CODES).sort((a,b)=>parseInt(a[0])-parseInt(b[0])).forEach(([code,name])=>lines.push(`| ${code} | ${name} |`));
