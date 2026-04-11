@@ -1248,7 +1248,8 @@ async function rTx(){
       <td style="text-align:right;font-size:var(--fs-xs);white-space:nowrap" class="${rb!==null?(rb<0?'c-bad':'c-ok'):''}">${rb!==null?fmtS(rb):'--'}</td>
       <td>${tbadge(t.type)}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-xs" onclick="openCP('${t.id}','${ym}','${t.mainCatId||''}','${t.subCatId||''}')">Edit Cat</button>
+        <button class="btn btn-xs" onclick="openCP('${t.id}','${ym}','${t.mainCatId||''}','${t.subCatId||''}')">Cat</button>
+        <button class="btn btn-xs" onclick="openEditTxn('${t.id}','${ym}')">Edit</button>
         ${!t.isSub?`<button class="btn btn-xs" onclick="mkSub('${t.id}','${ym}')">Sub</button>`:''}
         <button class="btn btn-xs btn-d" onclick="delTxn('${t.id}','${ym}')">&#10005;</button>
       </td>
@@ -1277,7 +1278,13 @@ async function rTx(){
     <label class="lbl">JSON Data</label>
     <textarea id="imp-json" placeholder='{"account_id":"acc_xxx","month":"2026-03","transactions":[]}'></textarea>
     <div id="imp-err" style="font-size:var(--fs-xs);color:var(--bad);margin-top:6px;display:none"></div>
-    <div class="fg" style="margin-top:8px"><button class="btn btn-p" onclick="doImport()">Import</button><button class="btn" onclick="tp('imp-panel')">Cancel</button></div>
+    <div class="fg jb" style="margin-top:8px;flex-wrap:wrap;gap:8px">
+      <div class="fg" style="gap:6px">
+        <button class="btn btn-p" onclick="doImport()">Import</button>
+        <button class="btn" onclick="tp('imp-panel')">Cancel</button>
+      </div>
+      <button class="btn btn-d btn-sm" onclick="clearMonthTxns()" title="Delete all transactions for the displayed month for the selected account">&#128465; Clear this month</button>
+    </div>
   </div>
   <div id="atxn-panel" class="panel">
     <div class="chdr">Add Transaction Manually</div>
@@ -1331,6 +1338,93 @@ async function mkSub(id,ym){
   const ymk=ym||S.month;
   const t=(S.txnCache[ymk]||[]).find(x=>x.id===id);if(t)t.isSub=true;
   schedTxn(ymk);render();toast('Marked as subscription');
+}
+// ─── EDIT TRANSACTION ───
+function openEditTxn(id,ym){
+  const ymk=ym||S.month;
+  const t=(S.txnCache[ymk]||[]).find(x=>x.id===id);
+  if(!t){toast('Transaction not found',false);return;}
+  document.getElementById('etxn-id').value=id;
+  document.getElementById('etxn-ym').value=ymk;
+  document.getElementById('etxn-date').value=toDD(t.date);
+  document.getElementById('etxn-amount').value=t.amount;
+  document.getElementById('etxn-desc').value=t.description||'';
+  document.getElementById('etxn-notes').value=t.notes||'';
+  document.getElementById('etxn-type').value=t.type||'expense';
+  document.getElementById('etxn-dir').value=txDir(t);
+  // Populate account options
+  const accSel=document.getElementById('etxn-acc');
+  accSel.innerHTML='<option value="">-- Unassigned --</option>'+S.accounts.map(a=>`<option value="${a.id}">${a.name}</option>`).join('');
+  accSel.value=t.accountId||'';
+  // Populate debt options
+  const debtSel=document.getElementById('etxn-debt');
+  debtSel.innerHTML='<option value="">-- None --</option>'+S.debts.filter(d=>d.status==='active').map(d=>`<option value="${d.id}">${d.name}</option>`).join('');
+  debtSel.value=t.debtId||'';
+  // Category
+  document.getElementById('etxn-mc').value=t.mainCatId||'';
+  document.getElementById('etxn-sc').value=t.subCatId||'';
+  const mc=getMC(t.mainCatId),sc=getSC(t.subCatId);
+  document.getElementById('etxn-cat-label').textContent=(mc?.name||'--')+(sc?' / '+sc.name:'');
+  document.getElementById('edit-txn-modal').classList.add('active');
+}
+function openCPEditTxn(){
+  const curM=document.getElementById('etxn-mc').value;
+  const curS=document.getElementById('etxn-sc').value;
+  buildCM(curM||null,curS||null);
+  catCb=(m,s)=>{
+    document.getElementById('etxn-mc').value=m||'';
+    document.getElementById('etxn-sc').value=s||'';
+    const mc=getMC(m),sc=getSC(s);
+    document.getElementById('etxn-cat-label').textContent=(mc?.name||'--')+(sc?' / '+sc.name:'');
+  };
+  document.getElementById('cat-modal').classList.add('active');
+}
+async function saveEditTxn(){
+  const id=document.getElementById('etxn-id').value;
+  const ymk=document.getElementById('etxn-ym').value;
+  if(!S.txnCache[ymk])return;
+  const t=S.txnCache[ymk].find(x=>x.id===id);
+  if(!t){toast('Transaction not found',false);return;}
+  const dateRaw=document.getElementById('etxn-date').value;
+  const dateIso=dateRaw.includes('/')?fromDD(dateRaw):dateRaw;
+  const newAmt=parseFloat(document.getElementById('etxn-amount').value);
+  if(isNaN(newAmt)||newAmt<0){toast('Valid amount required',false);return;}
+  // Apply changes
+  t.date=dateIso;
+  t.amount=newAmt;
+  t.description=document.getElementById('etxn-desc').value.trim();
+  t.notes=document.getElementById('etxn-notes').value.trim();
+  t.type=document.getElementById('etxn-type').value;
+  t.direction=document.getElementById('etxn-dir').value;
+  t.accountId=document.getElementById('etxn-acc').value||null;
+  t.debtId=document.getElementById('etxn-debt').value||null;
+  const newMid=document.getElementById('etxn-mc').value||null;
+  const newSid=document.getElementById('etxn-sc').value||null;
+  t.mainCatId=newMid;t.subCatId=newSid;
+  if(newMid)learnRule(t.raw_description||t.description,newMid,newSid);
+  // Re-sort month
+  S.txnCache[ymk].sort((a,b)=>a.date.localeCompare(b.date));
+  schedTxn(ymk);closeEditTxn();render();toast('Transaction updated');
+}
+function closeEditTxn(){
+  document.getElementById('edit-txn-modal').classList.remove('active');
+}
+function clearMonthTxns(){
+  const ym=S.month;
+  const accOverride=document.getElementById('imp-acc-override')?.value||null;
+  const count=(S.txnCache[ym]||[]).filter(t=>!accOverride||t.accountId===accOverride).length;
+  if(count===0){toast('No transactions found for '+fmtYM(ym),false);return;}
+  const msg=accOverride
+    ?`Delete ${count} transaction${count!==1?'s':''} for the selected account in ${fmtYM(ym)}?`
+    :`Delete ALL ${count} transaction${count!==1?'s':''} for ${fmtYM(ym)} across all accounts?`;
+  if(!confirm(msg))return;
+  if(accOverride){
+    S.txnCache[ym]=(S.txnCache[ym]||[]).filter(t=>t.accountId!==accOverride);
+  }else{
+    S.txnCache[ym]=[];
+  }
+  schedTxn(ym);render();
+  toast(`Cleared ${count} transaction${count!==1?'s':''} for ${fmtYM(ym)}.`);
 }
 function autoDir(type){
   const d=document.getElementById('nt-dir');if(!d)return;
@@ -1493,7 +1587,7 @@ async function rUncat(){
       <td>${h(t.description)}</td>
       <td style="font-size:var(--fs-xs)">${acc?.name||'--'}</td>
       <td style="text-align:right;font-weight:500" class="c-bad">-${fmtP(t.amount)}</td>
-      <td><button class="btn btn-xs btn-p" onclick="openCP('${t.id}','${ym}','','')">Assign</button></td>
+      <td><button class="btn btn-xs btn-p" onclick="openCP('${t.id}','${ym}','','')">Assign</button><button class="btn btn-xs" onclick="openEditTxn('${t.id}','${ym}')">Edit</button></td>
     </tr>`;}).join(''):`<tr><td colspan="5" class="empty">&#10003; No uncategorized transactions</td></tr>`;
   const fRows=flagged.length?flagged.map(t=>{
     const acc=S.accounts.find(a=>a.id===t.accountId);
@@ -1915,6 +2009,7 @@ const ATG=[{g:'Bank Accounts',o:[{v:'main_account',l:'Main Account'},{v:'savings
 const ATL=ATG.flatMap(g=>g.o).reduce((m,o)=>{m[o.v]=o.l;return m;},{});
 const ATS=ATG.map(g=>`<optgroup label="${g.g}">${g.o.map(o=>`<option value="${o.v}">${o.l}</option>`).join('')}</optgroup>`).join('');
 const INV=new Set(['brokerage_account','fund_account','gold_account','crypto_wallet','real_estate_fund','direct_investment']);
+const ACS=[{v:'public_markets',l:'Public Markets'},{v:'funds_managed',l:'Funds & Managed Portfolios'},{v:'private_credit',l:'Private Credit'},{v:'real_assets',l:'Real Assets'},{v:'commodities',l:'Commodities'},{v:'digital_assets',l:'Digital Assets'},{v:'private_equity',l:'Private Equity / Venture'},{v:'cash_liquidity',l:'Cash & Liquidity'}];
 let editAccId=null;
 function onATC(v){const r=document.getElementById('ac-row');if(r)r.style.display=INV.has(v)?'block':'none';}
 function rAcc(){
@@ -2456,5 +2551,56 @@ async function doRestore(){
 
 initAuth();
 </script>
+
+<!-- EDIT TRANSACTION MODAL -->
+<div class="mo" id="edit-txn-modal">
+  <div class="md" style="max-width:520px">
+    <div class="mdtitle">Edit Transaction</div>
+    <input type="hidden" id="etxn-id">
+    <input type="hidden" id="etxn-ym">
+    <div class="fr" style="margin-bottom:8px">
+      <div><label class="lbl">Date (DD/MM/YYYY)</label><input type="text" id="etxn-date" placeholder="DD/MM/YYYY"></div>
+      <div><label class="lbl">Amount (SAR)</label><input type="number" id="etxn-amount" min="0" step="0.01"></div>
+    </div>
+    <div style="margin-bottom:8px"><label class="lbl">Description</label><input type="text" id="etxn-desc"></div>
+    <div class="fr" style="margin-bottom:8px">
+      <div><label class="lbl">Type</label>
+        <select id="etxn-type" onchange="autoDir(this.value);document.getElementById('etxn-dir').value=this.value==='income'?'in':'out'">
+          <option value="expense">Expense</option>
+          <option value="income">Income</option>
+          <option value="transfer">Transfer</option>
+          <option value="investment">Investment</option>
+          <option value="external_transfer">External Transfer</option>
+        </select>
+      </div>
+      <div><label class="lbl">Direction</label>
+        <select id="etxn-dir">
+          <option value="out">Out — debit (money leaves)</option>
+          <option value="in">In — credit (money arrives)</option>
+        </select>
+      </div>
+    </div>
+    <div class="fr" style="margin-bottom:8px">
+      <div><label class="lbl">Account</label>
+        <select id="etxn-acc">
+          <option value="">-- Unassigned --</option>
+        </select>
+      </div>
+      <div><label class="lbl">Linked Debt</label>
+        <select id="etxn-debt">
+          <option value="">-- None --</option>
+        </select>
+      </div>
+    </div>
+    <div style="margin-bottom:8px"><label class="lbl">Notes</label><input type="text" id="etxn-notes" placeholder="Optional"></div>
+    <input type="hidden" id="etxn-mc">
+    <input type="hidden" id="etxn-sc">
+    <button class="btn btn-sm" id="etxn-cat-btn" onclick="openCPEditTxn()" style="margin-bottom:10px">Category: <span id="etxn-cat-label">--</span></button>
+    <div class="fg">
+      <button class="btn btn-p f1" onclick="saveEditTxn()">Save Changes</button>
+      <button class="btn" onclick="closeEditTxn()">Cancel</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
