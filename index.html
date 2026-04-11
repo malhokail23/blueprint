@@ -546,7 +546,7 @@ function defOwners(){return[{id:'owner_self',name:'Self'}];}
 let S={
   tab:'overview',month:getYM(new Date()),dashOwner:'owner_self',privacy:false,ovPeriod:'month',
   owners:[],accounts:[],debts:[],goals:[],income:[],bills:[],subs:[],staff:[],
-  rules:[],dismissed:[],deletedCats:[],deletedSubs:[],txnCache:{},
+  rules:[],dismissed:[],deletedCats:[],deletedSubs:[],txnCache:{},monthlyBal:{},
   settings:{currency:'SAR',savingsTarget:20,backupReminderMonths:2,lastBackup:null},
   version:VERSION
 };
@@ -597,14 +597,20 @@ function calcRunningBalance(txns,openingBal){
   return map;
 }
 function getAccountOpeningBal(accId,ym){
-  // Use the account's manually entered opening balance
-  // Reads openingBalance (stored by saveAcc)
+  // Priority 1: opening balance stored from import form for this specific account+month
+  const mk=accId+'_'+ym;
+  if(S.monthlyBal[mk]?.opening!=null)return S.monthlyBal[mk].opening;
+  // Priority 2: closing balance of the previous month (if stored)
+  const prevYm=addM(ym,-1);
+  const pmk=accId+'_'+prevYm;
+  if(S.monthlyBal[pmk]?.closing!=null)return S.monthlyBal[pmk].closing;
+  // Priority 3: account-level opening balance from the Accounts tab profile
   const acc=S.accounts.find(a=>a.id===accId);
   const bal=acc?.openingBalance??null;
   const asOf=acc?.balanceAsOf||null;
   if(bal===null||!asOf)return 0;
   const asOfYM=asOf.substr(0,7);
-  // Only use as opening if the as-of date is before or in the same month
+  // Only use if as-of date falls in a month before or equal to the viewing month
   if(asOfYM<=ym)return bal;
   return 0;
 }
@@ -616,7 +622,7 @@ function getMainP(){
     version:VERSION,
     accounts:S.accounts,debts:S.debts,goals:S.goals,income:S.income,
     bills:S.bills,subs:S.subs,staff:S.staff,rules:S.rules,dismissed:S.dismissed,
-    deletedCats:S.deletedCats,deletedSubs:S.deletedSubs,owners:S.owners,settings:S.settings
+    deletedCats:S.deletedCats,deletedSubs:S.deletedSubs,owners:S.owners,settings:S.settings,monthlyBal:S.monthlyBal
   };
 }
 function restoreS(d){
@@ -626,7 +632,7 @@ function restoreS(d){
   S.dismissed=d.dismissed||[];
   S.deletedCats=d.deletedCats||[];S.deletedSubs=d.deletedSubs||[];
   S.owners=d.owners&&d.owners.length?d.owners:defOwners();
-  S.settings={currency:'SAR',savingsTarget:20,backupReminderMonths:2,lastBackup:null,...(d.settings||{})};
+  S.settings={currency:'SAR',savingsTarget:20,backupReminderMonths:2,lastBackup:null,...(d.settings||{})};  S.monthlyBal=d.monthlyBal||{};
   // txnCache stays separate - loaded in loadS
   applyDeletions();
 }
@@ -1390,19 +1396,27 @@ async function doImport(){
 
   // Balance guard
   const closingBal=parseFloat(document.getElementById('imp-closing-bal').value)||null;
-  const openingForGuard=parseFloat(document.getElementById('imp-opening-bal')?.value)||0;
+  const openingForGuard=parseFloat(document.getElementById('imp-opening-bal')?.value)||null;
+  // Store opening/closing for this account+month so running balance display is accurate
+  if(rId&&openingForGuard!==null){
+    const mk=rId+'_'+ym;
+    if(!S.monthlyBal[mk])S.monthlyBal[mk]={};
+    S.monthlyBal[mk].opening=openingForGuard;
+  }
   if(closingBal!==null&&rId){
     const allAccTx=txns.filter(t=>t.accountId===rId);
     // Use direction as source of truth for ALL transaction types including transfers
-    const calcBal=openingForGuard+allAccTx.reduce((s,t)=>{return s+(txDir(t)==='in'?t.amount:-t.amount);},0);
+    const calcBal=(openingForGuard||0)+allAccTx.reduce((s,t)=>{return s+(txDir(t)==='in'?t.amount:-t.amount);},0);
     const diff=Math.abs(closingBal-calcBal);
     if(diff>1){
+      if(rId){const mk=rId+'_'+ym;if(!S.monthlyBal[mk])S.monthlyBal[mk]={};S.monthlyBal[mk].closing=closingBal;}
       const guardMsg=`Balance guard: SAR ${diff.toFixed(2)} discrepancy. Opening: ${fmt(openingForGuard)} + txns = ${fmt(calcBal)}, statement says ${fmt(closingBal)}.`;
       toast(guardMsg,false);
       txns.push({id:uid(),date:ym+'-01',description:'Balance Guard Alert — Discrepancy of SAR '+diff.toFixed(2),amount:0,type:'expense',mainCatId:null,subCatId:null,accountId:rId,flagged:true,notes:`Statement closing balance: ${closingBal}. Calculated: ${calcBal.toFixed(2)}`});
-    }else{toast(`Imported ${added} transaction${added!==1?'s':''}. Balance guard passed ✓`);}
+    }else{toast(`Imported ${added} transaction${added!==1?'s':''}. Balance guard passed ✓`);if(rId){const mk=rId+'_'+ym;if(!S.monthlyBal[mk])S.monthlyBal[mk]={};S.monthlyBal[mk].closing=closingBal;}}
   }
 
+  sched(); // save monthlyBal
   if(ym!==S.month)S.month=ym;
   document.getElementById('imp-json').value='';document.getElementById('imp-closing-bal').value='';if(document.getElementById('imp-opening-bal'))document.getElementById('imp-opening-bal').value='';
   tp('imp-panel');schedTxn(ym);render();
