@@ -308,6 +308,7 @@ tbody tr:hover td{background:var(--bg2)}.tbl-wrap{overflow-x:auto}
     <button class="nav-item" data-tab="settings" onclick="sw('settings')">Settings</button>
     <div class="nav-right">
       <span style="font-size:11px;color:var(--text3)" id="save-st"></span>
+      <button class="nav-btn" id="refresh-btn" onclick="refreshData()" title="Refresh data from Supabase">&#8635;</button>
       <button class="nav-btn" id="priv-btn" onclick="togglePrivacy()">&#128065; Hide</button>
       <button class="nav-btn nav-lock" onclick="lockApp()">&#128274; Lock</button>
       <button class="nav-btn" onclick="document.getElementById('eng-overlay').classList.add('active')" title="Switch Engine">&#9783;</button>
@@ -759,6 +760,24 @@ function sw(tab){
     if(dd)dd.innerHTML=g.tabs.map(t=>`<button class="${tab===t?'dd-active':''}" onclick="sw('${t}')">${g.labels[t]}</button>`).join('');
   } else if(activeGroup&&activeGroup!==grp){closeGroup();}
   render();updateBadge();
+}
+async function refreshData(){
+  if(!sKey){toast('Not unlocked',false);return;}
+  const btn=document.getElementById('refresh-btn');
+  if(btn){btn.style.animation='spin .6s linear infinite';btn.disabled=true;}
+  setSS('Refreshing...');
+  try{
+    await loadS();
+    render();
+    setSS('Refreshed ✓');setTimeout(()=>setSS(''),2500);
+    toast('Data refreshed');
+  }catch(e){
+    setSS('Refresh failed');
+    toast('Refresh failed',false);
+    console.error(e);
+  }finally{
+    if(btn){btn.style.animation='';btn.disabled=false;}
+  }
 }
 function prevM(){S.month=addM(S.month,-1);render();}
 function nextM(){S.month=addM(S.month,1);render();}
