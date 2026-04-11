@@ -905,9 +905,10 @@ async function rOv(){
 
   // Chart data
   const cm=months.slice(-6);
-  const cI=cm.map(m=>(S.txnCache[m]||[]).filter(t=>txDir(t)==='in').reduce((s,t)=>s+t.amount,0));
-  const cE=cm.map(m=>(S.txnCache[m]||[]).filter(t=>txDir(t)==='out'&&t.type==='expense').reduce((s,t)=>s+t.amount,0));
-  const cV=cm.map(m=>(S.txnCache[m]||[]).filter(t=>txDir(t)==='out'&&t.type==='investment').reduce((s,t)=>s+t.amount,0));
+  const accFilter=t=>!ownerOk||(t.accountId&&ai.has(t.accountId));
+  const cI=cm.map(m=>(S.txnCache[m]||[]).filter(t=>accFilter(t)&&txDir(t)==='in'&&!isMatched(t.id)).reduce((s,t)=>s+t.amount,0));
+  const cE=cm.map(m=>(S.txnCache[m]||[]).filter(t=>accFilter(t)&&txDir(t)==='out'&&t.type==='expense').reduce((s,t)=>s+t.amount,0));
+  const cV=cm.map(m=>(S.txnCache[m]||[]).filter(t=>accFilter(t)&&txDir(t)==='out'&&t.type==='investment').reduce((s,t)=>s+t.amount,0));
   const cDeficit=cm.map((m,i)=>cE[i]>cI[i]);
   const cL=cm.map(fmtYM);
   window._cd={labels:cL,inc:cI,exp:cE,inv:cV,deficit:cDeficit};
@@ -967,8 +968,8 @@ async function rOv(){
   // Savings rate mini bars
   const srMonths=mRange(addM(now,-2),now);
   const srBars=srMonths.map(m=>{
-    const mInc=(S.txnCache[m]||[]).filter(t=>txDir(t)==='in').reduce((s,t)=>s+t.amount,0);
-    const mExp=(S.txnCache[m]||[]).filter(t=>txDir(t)==='out'&&t.type!=='transfer').reduce((s,t)=>s+t.amount,0);
+    const mInc=(S.txnCache[m]||[]).filter(t=>accFilter(t)&&txDir(t)==='in'&&!isMatched(t.id)).reduce((s,t)=>s+t.amount,0);
+    const mExp=(S.txnCache[m]||[]).filter(t=>accFilter(t)&&txDir(t)==='out'&&t.type!=='transfer').reduce((s,t)=>s+t.amount,0);
     const mSr=mInc>0?Math.round((mInc-mExp)/mInc*100):0;
     const col=mSr>=tgt?'#1D9E75':mSr>=10?'#BA7517':'#E24B4A';
     return`<div style="text-align:center;flex:1">
@@ -1220,6 +1221,21 @@ async function rOv(){
   <div class="slbl" style="margin-top:1.25rem">Alerts &amp; Action Items</div>
   <div class="card card-bordered" style="padding:.75rem 1.25rem">
     ${alertHtml}
+  </div>
+
+  <!-- AI INSIGHTS -->
+  <div class="slbl" style="margin-top:1.5rem">AI Financial Insights</div>
+  <div class="shint">Powered by Claude. Analyzes your aggregated financial data — no transaction descriptions or personal details are sent.</div>
+  <div class="card card-bordered" id="ai-insights-card">
+    <div id="ai-insights-content">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div>
+          <div class="ctitle">Get AI Analysis</div>
+          <div class="csub">Click to generate personalized observations and recommendations based on your imported data.</div>
+        </div>
+        <button class="btn btn-p" id="ai-gen-btn" onclick="generateAIInsights()">&#10024; Generate Insights</button>
+      </div>
+    </div>
   </div>`;
 }
 
@@ -2816,6 +2832,270 @@ async function doRestore(){
   restoreS(d);await saveState();tp('restore-panel');render();toast('Restored and saved');
 }
 
+
+
+// ─── AI FINANCIAL INSIGHTS ───
+
+function buildFinancialSnapshot(){
+  // Compile aggregated data snapshot — no raw descriptions, no personal identifiers
+  const now=getYM(new Date());
+  const months=Object.keys(S.txnCache).filter(k=>S.txnCache[k]?.length).sort();
+  const last3=mRange(addM(now,-2),now);
+  const last6=mRange(addM(now,-5),now);
+
+  // Helper: get month totals
+  function mTotals(ym){
+    const txns=S.txnCache[ym]||[];
+    const inc=txns.filter(t=>txDir(t)==='in'&&!isMatched(t.id)).reduce((s,t)=>s+t.amount,0);
+    const exp=txns.filter(t=>txDir(t)==='out'&&t.type==='expense').reduce((s,t)=>s+t.amount,0);
+    const inv=txns.filter(t=>txDir(t)==='out'&&t.type==='investment').reduce((s,t)=>s+t.amount,0);
+    const ext=txns.filter(t=>t.type==='external_transfer').reduce((s,t)=>s+t.amount,0);
+    const sr=inc>0?Math.round((inc-exp-inv-ext)/inc*100):0;
+    return{ym,inc,exp,inv,ext,sr,net:inc-exp-inv-ext};
+  }
+
+  const monthlyData=last6.map(m=>mTotals(m));
+  const recent=last3.map(m=>mTotals(m));
+
+  // Spending by category (last 3 months)
+  const catTotals={};
+  last3.forEach(m=>{
+    (S.txnCache[m]||[]).filter(t=>t.type==='expense'&&t.mainCatId&&getMC(t.mainCatId)).forEach(t=>{
+      const name=getMC(t.mainCatId).name;
+      catTotals[name]=(catTotals[name]||0)+t.amount;
+    });
+  });
+  const topCats=Object.entries(catTotals).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([name,amt])=>({name,total:Math.round(amt),monthly:Math.round(amt/3)}));
+
+  // MoM changes
+  const thisM=mTotals(now);
+  const lastM=mTotals(addM(now,-1));
+  const momExpChange=lastM.exp>0?Math.round((thisM.exp-lastM.exp)/lastM.exp*100):null;
+  const momIncChange=lastM.inc>0?Math.round((thisM.inc-lastM.inc)/lastM.inc*100):null;
+
+  // Debts
+  const activeDebts=S.debts.filter(d=>d.status==='active').map(d=>({
+    name:d.name,
+    type:d.type,
+    remaining:Math.round(d.type==='credit_card'?calcCCBalance(d):(d.remaining||0)),
+    installment:d.type==='credit_card'?Math.round(d.minPayment||0):Math.round(d.installment||0),
+    profitRate:d.profitRate,
+    endDate:d.endDate?toDD(d.endDate):null,
+    creditLimit:d.creditLimit||null,
+  }));
+  const totalDebt=activeDebts.reduce((s,d)=>s+d.remaining,0);
+  const monthlyDebtObl=activeDebts.reduce((s,d)=>s+d.installment,0);
+
+  // Income
+  const avgInc=recent.length?Math.round(recent.reduce((s,m)=>s+m.inc,0)/recent.length):0;
+  const dti=avgInc>0?Math.round(monthlyDebtObl/avgInc*100):0;
+
+  // Subscriptions
+  const subs=allTxns().filter(t=>t.isSub);
+  const subMap={};
+  subs.forEach(t=>{const k=(t.raw_description||t.description||'').toLowerCase().trim().substr(0,30);subMap[k]=(subMap[k]||0)+t.amount;});
+  const uniqueSubs=Object.keys(subMap).length;
+  const estMonthlySubCost=Math.round(Object.values(subMap).reduce((s,v)=>s+v,0)/Math.max(last3.length,1));
+
+  // Goals
+  const activeGoals=S.goals.filter(g=>g.status==='active').map(g=>({
+    name:g.name,
+    target:Math.round(g.target),
+    saved:Math.round(g.saved||0),
+    pct:g.target>0?Math.round((g.saved||0)/g.target*100):0,
+    deadline:g.deadline?toDD(g.deadline):null,
+  }));
+
+  // Savings rate trend
+  const srTrend=recent.map(m=>({month:fmtYM(m.ym),rate:m.sr}));
+  const avgSr=recent.length?Math.round(recent.reduce((s,m)=>s+m.sr,0)/recent.length):0;
+  const savingsTarget=S.settings.savingsTarget||20;
+
+  // Food split
+  const foodSubs={groceries:0,delivery:0,dining:0};
+  last3.forEach(m=>{
+    (S.txnCache[m]||[]).filter(t=>t.type==='expense').forEach(t=>{
+      const sid=t.subCatId;
+      if(['sub_groceries','sub_supermarket','sub_wholesale'].includes(sid))foodSubs.groceries+=t.amount;
+      else if(['sub_food_delivery','sub_meal_kits'].includes(sid))foodSubs.delivery+=t.amount;
+      else if(['sub_dining','sub_fine_dining','sub_fast_food','sub_coffee','sub_bakery'].includes(sid))foodSubs.dining+=t.amount;
+    });
+  });
+
+  // Staff cost
+  const staffCost=S.staff.reduce((s,st)=>s+st.salary,0);
+
+  return{
+    currency:'SAR',
+    periodMonths:months.length,
+    importedMonths:months.map(fmtYM),
+    currentMonth:fmtYM(now),
+    monthlyTrend:monthlyData.map(m=>({
+      month:fmtYM(m.ym),
+      income:Math.round(m.inc),
+      expenses:Math.round(m.exp),
+      investments:Math.round(m.inv),
+      externalTransfers:Math.round(m.ext),
+      savingsRate:m.sr,
+      net:Math.round(m.net),
+    })),
+    averages:{
+      monthlyIncome:avgInc,
+      monthlyExpenses:Math.round(recent.reduce((s,m)=>s+m.exp,0)/Math.max(recent.length,1)),
+      savingsRate:avgSr,
+      savingsTarget,
+    },
+    momChanges:{
+      expenseChange:momExpChange,
+      incomeChange:momIncChange,
+    },
+    topSpendingCategories:topCats,
+    foodSplit:{
+      groceries:Math.round(foodSubs.groceries/Math.max(last3.length,1)),
+      delivery:Math.round(foodSubs.delivery/Math.max(last3.length,1)),
+      dining:Math.round(foodSubs.dining/Math.max(last3.length,1)),
+    },
+    debts:{
+      count:activeDebts.length,
+      totalRemaining:Math.round(totalDebt),
+      monthlyObligations:monthlyDebtObl,
+      dtiPercent:dti,
+      items:activeDebts,
+    },
+    subscriptions:{
+      confirmed:uniqueSubs,
+      estimatedMonthlyCost:estMonthlySubCost,
+    },
+    goals:activeGoals,
+    staffMonthlyCost:Math.round(staffCost),
+    savingsRateTrend:srTrend,
+  };
+}
+
+async function generateAIInsights(){
+  const card=document.getElementById('ai-insights-content');
+  const btn=document.getElementById('ai-gen-btn');
+  if(!card)return;
+
+  // Show loading state
+  card.innerHTML=`
+    <div style="display:flex;align-items:center;gap:12px;padding:.5rem 0">
+      <div class="auth-spin" style="width:20px;height:20px;margin:0"></div>
+      <div style="font-size:var(--fs-sm);color:var(--text2)">Analyzing your financial data...</div>
+    </div>`;
+
+  const snapshot=buildFinancialSnapshot();
+
+  const systemPrompt=`You are a senior personal finance advisor analyzing a Saudi Arabian individual's financial dashboard data. 
+Your analysis must be:
+- Specific to the actual numbers provided — no generic advice
+- Actionable — every observation must include a concrete next step
+- Direct and concise — bullet points, no fluff
+- Aware of Saudi context (SAR currency, potential family financial responsibilities)
+- Honest — flag real risks clearly, celebrate real wins
+
+Respond ONLY in this exact JSON format, no other text:
+{
+  "summary": "2-3 sentence overall financial health assessment",
+  "score": number between 1-10 representing overall financial health,
+  "scoreLabel": "e.g. Strong / Good / Fair / Needs Attention / Critical",
+  "insights": [
+    {
+      "type": "positive|warning|critical|opportunity",
+      "title": "Short title",
+      "observation": "What the data shows — be specific with numbers",
+      "action": "Exactly what to do about it"
+    }
+  ]
+}
+
+Generate 5-8 insights covering: savings rate, spending trends, debt management, subscription costs, food spending, cash flow, goals progress, and any standout patterns in the data.`;
+
+  const userPrompt=`Here is my financial data snapshot:\n\n${JSON.stringify(snapshot, null, 2)}\n\nProvide a thorough analysis with specific, actionable insights based on this data.`;
+
+  try{
+    const resp=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:1500,
+        system:systemPrompt,
+        messages:[{role:'user',content:userPrompt}]
+      })
+    });
+
+    const data=await resp.json();
+    const raw=data.content?.[0]?.text||'';
+    let result;
+    try{
+      const cleaned=raw.replace(/```json|```/g,'').trim();
+      result=JSON.parse(cleaned);
+    }catch(e){
+      throw new Error('Could not parse AI response');
+    }
+
+    renderAIInsights(result,snapshot);
+  }catch(e){
+    card.innerHTML=`
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div style="font-size:var(--fs-xs);color:var(--bad)">Analysis failed: ${e.message}. Check your connection and try again.</div>
+        <button class="btn btn-sm" onclick="generateAIInsights()">Retry</button>
+      </div>`;
+    console.error('AI insights error:',e);
+  }
+}
+
+function renderAIInsights(result, snapshot){
+  const card=document.getElementById('ai-insights-content');
+  if(!card)return;
+
+  const scoreColor=result.score>=8?'var(--ok)':result.score>=6?'#BA7517':result.score>=4?'var(--warn)':'var(--bad)';
+  const typeConfig={
+    positive:{bg:'#DCFCE7',color:'#166534',icon:'✓'},
+    warning:{bg:'#FEF3C7',color:'#92400E',icon:'⚠'},
+    critical:{bg:'#FEE2E2',color:'#991B1B',icon:'!'},
+    opportunity:{bg:'#DBEAFE',color:'#1E40AF',icon:'→'},
+  };
+
+  const insightCards=(result.insights||[]).map(ins=>{
+    const cfg=typeConfig[ins.type]||typeConfig.warning;
+    return`<div style="background:${cfg.bg};border-radius:var(--r);padding:1rem 1.1rem;margin-bottom:10px">
+      <div style="display:flex;gap:10px;align-items:flex-start">
+        <div style="width:22px;height:22px;border-radius:50%;background:${cfg.color}22;color:${cfg.color};font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">${cfg.icon}</div>
+        <div style="flex:1">
+          <div style="font-size:var(--fs-sm);font-weight:600;color:${cfg.color};margin-bottom:3px">${h(ins.title)}</div>
+          <div style="font-size:var(--fs-xs);color:var(--text);line-height:1.6;margin-bottom:6px">${h(ins.observation)}</div>
+          <div style="font-size:var(--fs-xs);font-weight:500;color:${cfg.color};line-height:1.5">
+            <span style="font-weight:600">Action: </span>${h(ins.action)}
+          </div>
+        </div>
+      </div>
+    </div>`;}).join('');
+
+  const generatedAt=new Date().toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
+
+  card.innerHTML=`
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:1.25rem">
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+          <div style="text-align:center;background:var(--bg2);border:2px solid ${scoreColor};border-radius:50%;width:52px;height:52px;display:flex;flex-direction:column;align-items:center;justify-content:center;flex-shrink:0">
+            <div style="font-size:18px;font-weight:700;color:${scoreColor};line-height:1">${result.score}</div>
+            <div style="font-size:8px;color:var(--text3);line-height:1">/10</div>
+          </div>
+          <div>
+            <div style="font-size:15px;font-weight:600;color:${scoreColor}">${h(result.scoreLabel||'')}</div>
+            <div style="font-size:var(--fs-xs);color:var(--text2);line-height:1.5;max-width:600px">${h(result.summary||'')}</div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:flex-start">
+        <button class="btn btn-sm" onclick="generateAIInsights()" title="Regenerate">&#8635; Refresh</button>
+      </div>
+    </div>
+    ${insightCards}
+    <div style="font-size:10px;color:var(--text3);margin-top:10px;text-align:right">Generated ${generatedAt} · Based on ${snapshot.periodMonths} month${snapshot.periodMonths!==1?'s':''} of data · No raw transactions sent</div>`;
+}
 
 initAuth();
 </script>
