@@ -545,7 +545,7 @@ const OP=['#185FA5','#7F77DD','#D4537E','#1D9E75','#BA7517','#D85A30','#0F6E56',
 function oc(i){return OP[i%OP.length];}
 function defOwners(){return[{id:'owner_self',name:'Self'}];}
 let S={
-  tab:'overview',month:getYM(new Date()),dashOwner:'owner_self',privacy:false,ovPeriod:'prevmonth',
+  tab:'overview',month:addM(getYM(new Date()),-1),dashOwner:'owner_self',privacy:false,ovPeriod:'month',
   owners:[],accounts:[],debts:[],goals:[],income:[],bills:[],subs:[],staff:[],
   rules:[],dismissed:[],deletedCats:[],deletedSubs:[],txnCache:{},monthlyBal:{},matchedPairs:[],
   settings:{currency:'SAR',savingsTarget:20,backupReminderMonths:2,lastBackup:null},
@@ -780,8 +780,18 @@ async function refreshData(){
     if(btn){btn.style.animation='';btn.disabled=false;}
   }
 }
-function prevM(){S.month=addM(S.month,-1);render();}
-function nextM(){S.month=addM(S.month,1);render();}
+function prevM(){
+  const step={'month':1,'3m':3,'6m':6,'12m':12,'ytd':1,'all':1}[S.ovPeriod]||1;
+  S.month=addM(S.month,-step);render();
+}
+function nextM(){
+  const step={'month':1,'3m':3,'6m':6,'12m':12,'ytd':1,'all':1}[S.ovPeriod]||1;
+  const proposed=addM(S.month,step);
+  // Don't go beyond current month
+  const now=getYM(new Date());
+  S.month=proposed>now?now:proposed;
+  render();
+}
 function setDO(id){S.dashOwner=id;render();}
 function setOvP(p){S.ovPeriod=p;render();}
 async function render(){
@@ -807,12 +817,22 @@ async function render(){
 // ─── OVERVIEW ───
 async function rOv(){
   const now=getYM(new Date());
+  // S.month is the anchor/end month for all period modes
+  // Arrows shift S.month, period buttons define the window size
+  const anchor=S.month; // end of the selected window
   let months;
-  if(S.ovPeriod==='prevmonth')months=[addM(now,-1)];
-  else if(S.ovPeriod==='month')months=[now];
-  else if(S.ovPeriod==='3m')months=mRange(addM(now,-2),now);
-  else if(S.ovPeriod==='12m')months=mRange(addM(now,-11),now);
-  else{const keys=Object.keys(S.txnCache).filter(k=>S.txnCache[k]?.length).sort();months=keys.length?mRange(keys[0],now):[now];}
+  if(S.ovPeriod==='month')months=[anchor];
+  else if(S.ovPeriod==='3m')months=mRange(addM(anchor,-2),anchor);
+  else if(S.ovPeriod==='6m')months=mRange(addM(anchor,-5),anchor);
+  else if(S.ovPeriod==='12m')months=mRange(addM(anchor,-11),anchor);
+  else if(S.ovPeriod==='ytd'){
+    const janOfYear=anchor.substr(0,4)+'-01';
+    months=mRange(janOfYear,anchor);
+  }
+  else{// all time
+    const keys=Object.keys(S.txnCache).filter(k=>S.txnCache[k]?.length).sort();
+    months=keys.length?mRange(keys[0],anchor):[anchor];
+  }
   const prevMonths=months.map(m=>addM(m,-1));
   const allT=months.flatMap(m=>S.txnCache[m]||[]);
   const prevT=prevMonths.flatMap(m=>S.txnCache[m]||[]);
@@ -1042,7 +1062,7 @@ async function rOv(){
     ${S.owners.map(o=>`<button class="opill ${S.dashOwner===o.id?'active':''}" onclick="setDO('${o.id}')">${o.name}</button>`).join('')}
     <button class="opill ${!S.dashOwner?'active':''}" onclick="setDO(null)">All</button>
   </div>`;
-  const pbtns=['prevmonth','month','3m','12m','all'].map(p=>`<button class="pbtn ${S.ovPeriod===p?'active':''}" onclick="setOvP('${p}')">${p==='prevmonth'?'Prev Month':p==='month'?'This Month':p==='3m'?'3 Months':p==='12m'?'12 Months':'All Time'}</button>`).join('');
+  const pbtns=['month','3m','6m','12m','ytd','all'].map(p=>`<button class="pbtn ${S.ovPeriod===p?'active':''}" onclick="setOvP('${p}')">${{month:'1 Month','3m':'3 Months','6m':'6 Months','12m':'12 Months','ytd':'Year to Date','all':'All Time'}[p]}</button>`).join('');
 
   return`${opills}
   <div class="fg jb" style="margin-bottom:1.25rem;flex-wrap:wrap;gap:10px">
@@ -1050,9 +1070,15 @@ async function rOv(){
       <div style="font-size:19px;font-weight:500">Financial Overview</div>
       <div style="font-size:var(--fs-xs);color:var(--text3);margin-top:2px">Spending &amp; Income Engine · ${n} month${n!==1?'s':''} of data</div>
     </div>
-    <div class="fg" style="gap:8px;flex-wrap:wrap">
-      <div class="fg" style="gap:4px">${pbtns}</div>
-      <div class="mnav"><button onclick="prevM()">&#8592;</button><div class="mnav-lbl">${fmtYM(S.month)}</div><button onclick="nextM()">&#8594;</button></div>
+    <div class="fg" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <div class="fg" style="gap:4px;flex-wrap:wrap">${pbtns}</div>
+      <div class="fg" style="gap:6px;align-items:center">
+        <button class="mnav" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);background:var(--bg);cursor:pointer;border-radius:var(--rsm)" onclick="prevM()">&#8592;</button>
+        <div style="font-size:var(--fs-sm);font-weight:500;white-space:nowrap;min-width:160px;text-align:center">
+          ${months.length===1?fmtYM(months[0]):(fmtYM(months[0])+' &ndash; '+fmtYM(months[months.length-1]))}
+        </div>
+        <button class="mnav" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);background:var(--bg);cursor:pointer;border-radius:var(--rsm)" onclick="nextM()">&#8594;</button>
+      </div>
     </div>
   </div>
 
