@@ -571,6 +571,40 @@ function ctag(mid,sid){
   if(s)out+=` <span style="font-size:11px;color:var(--text3)">${s.name}</span>`;
   return out;
 }
+function txDir(t){
+  // direction is the single source of truth for sign
+  if(t.direction)return t.direction;
+  // Fallback for legacy transactions without direction field
+  if(t.type==='income')return'in';
+  if(t.type==='transfer'){
+    const d=(t.description||'').toLowerCase();
+    if(d.includes('inbound')||d.includes('inward')||d.includes('from '))return'in';
+    return'out';
+  }
+  // expense, external_transfer, investment are always out
+  return'out';
+}
+function calcRunningBalance(txns,openingBal){
+  // Returns a Map: txn.id -> running balance after that txn
+  const sorted=[...txns].sort((a,b)=>a.date.localeCompare(b.date)||0);
+  let bal=openingBal||0;
+  const map=new Map();
+  sorted.forEach(t=>{
+    const signed=txDir(t)==='in'?t.amount:-t.amount;
+    bal+=signed;
+    map.set(t.id,bal);
+  });
+  return map;
+}
+function getAccountOpeningBal(accId,ym){
+  // Use the account's manual balance entry as opening if it matches the month
+  const acc=S.accounts.find(a=>a.id===accId);
+  if(!acc?.balance||!acc?.balanceAsOf)return 0;
+  const asOfYM=acc.balanceAsOf.substr(0,7);
+  // If the as-of date is in the same month or before, use it as opening
+  if(asOfYM<=ym)return acc.balance;
+  return 0;
+}
 function tbadge(t){const m={income:'<span class="badge b-in">Income</span>',expense:'<span class="badge b-out">Expense</span>',transfer:'<span class="badge b-tr">Transfer</span>',investment:'<span class="badge b-inv">Investment</span>',external_transfer:'<span class="badge b-ext">External Transfer</span>'};return m[t]||`<span class="badge b-grey">${t}</span>`;}
 
 // ─── PERSIST (V1.2: separate txn storage) ───
@@ -759,10 +793,10 @@ async function rOv(){
   const n=months.length;
 
   // Core metrics
-  const inc=tx.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
-  const exp=tx.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
-  const inv=tx.filter(t=>t.type==='investment').reduce((s,t)=>s+t.amount,0);
-  const ext=tx.filter(t=>t.type==='external_transfer').reduce((s,t)=>s+t.amount,0);
+  const inc=tx.filter(t=>txDir(t)==='in').reduce((s,t)=>s+t.amount,0);
+  const exp=tx.filter(t=>txDir(t)==='out'&&t.type==='expense').reduce((s,t)=>s+t.amount,0);
+  const inv=tx.filter(t=>txDir(t)==='out'&&t.type==='investment').reduce((s,t)=>s+t.amount,0);
+  const ext=tx.filter(t=>txDir(t)==='out'&&t.type==='external_transfer').reduce((s,t)=>s+t.amount,0);
   const net=inc-exp-ext-inv;
   const tgt=S.settings.savingsTarget||20;
   const sr=inc>0?Math.round((net/inc)*100):0;
@@ -773,7 +807,9 @@ async function rOv(){
   const cashAccTypes=new Set(['main_account','savings_account','sub_account','debit_card','prepaid_card','cash']);
   const liquidAccs=S.accounts.filter(a=>cashAccTypes.has(a.type));
   // We can't know actual balances without balance tracking; use placeholder note
-  const ebRatio=null; // Phase 2 will add balance tracking
+  const cashAccTypes2=new Set(['main_account','savings_account','sub_account','debit_card','prepaid_card','cash']);
+  const totalLiquidCash=S.accounts.filter(a=>cashAccTypes2.has(a.type)).reduce((s,a)=>{const b=calcAccBalance(a);return b!==null?s+b:s;},0);
+  const ebRatio=avgMonthlyExp>0&&totalLiquidCash>0?Math.round(totalLiquidCash/avgMonthlyExp*10)/10:null;
 
   // DTI
   const monthlyDebt=S.debts.filter(d=>d.status==='active').reduce((s,d)=>s+(d.type==='credit_card'?(d.minPayment||0):(d.installment||0)),0);
@@ -782,7 +818,7 @@ async function rOv(){
   const dtiCol=dti<30?'c-ok':dti<=40?'c-warn':'c-bad';
 
   // Prev period metrics for burn rate
-  const prevExp=pTx.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
+  const prevExp=pTx.filter(t=>txDir(t)==='out'&&t.type==='expense').reduce((s,t)=>s+t.amount,0);
   const daysThis=new Date().getDate();
   const daysInMonth=new Date(new Date().getFullYear(),new Date().getMonth()+1,0).getDate();
   const burnThis=n===1?exp/Math.max(daysThis,1):(exp/(n*30.4));
@@ -790,13 +826,13 @@ async function rOv(){
   const burnDiff=burnPrev>0?Math.round((burnThis-burnPrev)/burnPrev*100):0;
 
   // MoM expense change
-  const thisMonthExp=(S.txnCache[S.month]||[]).filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
-  const lastMonthExp=(S.txnCache[addM(S.month,-1)]||[]).filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
+  const thisMonthExp=(S.txnCache[S.month]||[]).filter(t=>txDir(t)==='out'&&t.type==='expense').reduce((s,t)=>s+t.amount,0);
+  const lastMonthExp=(S.txnCache[addM(S.month,-1)]||[]).filter(t=>txDir(t)==='out'&&t.type==='expense').reduce((s,t)=>s+t.amount,0);
   const momDiff=lastMonthExp>0?Math.round((thisMonthExp-lastMonthExp)/lastMonthExp*100):null;
 
   // Spending by category
   const bc={};
-  tx.filter(t=>t.type==='expense'&&t.mainCatId&&getMC(t.mainCatId)).forEach(t=>{
+  tx.filter(t=>txDir(t)==='out'&&t.type==='expense'&&t.mainCatId&&getMC(t.mainCatId)).forEach(t=>{
     const col=CAT_COLORS[t.mainCatId]||'#888';const name=getMC(t.mainCatId)?.name||'Other';
     bc[name]={amount:(bc[name]?.amount||0)+t.amount,color:col,id:t.mainCatId};
   });
@@ -813,7 +849,7 @@ async function rOv(){
 
   // Food split
   const foodSubs={groceries:0,delivery:0,dining:0};
-  tx.filter(t=>t.type==='expense').forEach(t=>{
+  tx.filter(t=>txDir(t)==='out'&&t.type==='expense').forEach(t=>{
     const sub=t.subCatId;
     if(['sub_groceries','sub_supermarket','sub_wholesale'].includes(sub))foodSubs.groceries+=t.amount;
     else if(['sub_food_delivery','sub_meal_kits'].includes(sub))foodSubs.delivery+=t.amount;
@@ -822,7 +858,7 @@ async function rOv(){
 
   // Top 3 this month vs last month
   const bcPrev={};
-  pTx.filter(t=>t.type==='expense'&&t.mainCatId&&getMC(t.mainCatId)).forEach(t=>{const name=getMC(t.mainCatId)?.name||'Other';bcPrev[name]=(bcPrev[name]||0)+t.amount;});
+  pTx.filter(t=>txDir(t)==='out'&&t.type==='expense'&&t.mainCatId&&getMC(t.mainCatId)).forEach(t=>{const name=getMC(t.mainCatId)?.name||'Other';bcPrev[name]=(bcPrev[name]||0)+t.amount;});
   const top3=cl.slice(0,3).map(([name,{amount,color}])=>{
     const prev=bcPrev[name]||0;const pct=prev>0?Math.round((amount-prev)/prev*100):null;
     return`<div class="fg jb" style="padding:5px 0;border-bottom:1px solid var(--bg3)">
@@ -835,9 +871,9 @@ async function rOv(){
 
   // Chart data
   const cm=months.slice(-6);
-  const cI=cm.map(m=>(S.txnCache[m]||[]).filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0));
-  const cE=cm.map(m=>(S.txnCache[m]||[]).filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0));
-  const cV=cm.map(m=>(S.txnCache[m]||[]).filter(t=>t.type==='investment').reduce((s,t)=>s+t.amount,0));
+  const cI=cm.map(m=>(S.txnCache[m]||[]).filter(t=>txDir(t)==='in').reduce((s,t)=>s+t.amount,0));
+  const cE=cm.map(m=>(S.txnCache[m]||[]).filter(t=>txDir(t)==='out'&&t.type==='expense').reduce((s,t)=>s+t.amount,0));
+  const cV=cm.map(m=>(S.txnCache[m]||[]).filter(t=>txDir(t)==='out'&&t.type==='investment').reduce((s,t)=>s+t.amount,0));
   const cDeficit=cm.map((m,i)=>cE[i]>cI[i]);
   const cL=cm.map(fmtYM);
   window._cd={labels:cL,inc:cI,exp:cE,inv:cV,deficit:cDeficit};
@@ -897,8 +933,8 @@ async function rOv(){
   // Savings rate mini bars
   const srMonths=mRange(addM(now,-2),now);
   const srBars=srMonths.map(m=>{
-    const mInc=(S.txnCache[m]||[]).filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
-    const mExp=(S.txnCache[m]||[]).filter(t=>t.type!=='income'&&t.type!=='transfer').reduce((s,t)=>s+t.amount,0);
+    const mInc=(S.txnCache[m]||[]).filter(t=>txDir(t)==='in').reduce((s,t)=>s+t.amount,0);
+    const mExp=(S.txnCache[m]||[]).filter(t=>txDir(t)==='out'&&t.type!=='transfer').reduce((s,t)=>s+t.amount,0);
     const mSr=mInc>0?Math.round((mInc-mExp)/mInc*100):0;
     const col=mSr>=tgt?'#1D9E75':mSr>=10?'#BA7517':'#E24B4A';
     return`<div style="text-align:center;flex:1">
@@ -993,6 +1029,7 @@ async function rOv(){
     <div class="kpi"><div class="klbl">Savings Rate</div><div class="kval ${srCol}">${sr}%</div><div class="ksub">Target: ${tgt}% or above</div></div>
     <div class="kpi"><div class="klbl">Total Debt Remaining</div><div class="kval c-warn">${fmtP(td)}</div><div class="ksub">${actDebts.length} active debt${actDebts.length!==1?'s':''}</div></div>
     <div class="kpi"><div class="klbl">Debt-to-Income (DTI)</div><div class="kval ${dtiCol}">${dti}%</div><div class="ksub">Monthly debt vs monthly income${dti>40?' · Above 40% threshold':''}</div></div>
+    <div class="kpi"><div class="klbl">Emergency Buffer</div><div class="kval ${ebRatio===null?'c-mut':ebRatio>=3?'c-ok':ebRatio>=1?'c-warn':'c-bad'}">${ebRatio!==null?ebRatio+' mo':'--'}</div><div class="ksub">${ebRatio===null?'Set opening balances to track':ebRatio>=3?'Healthy — 3+ months covered':ebRatio>=1?'Below target':'Critical — less than 1 month'}</div></div>
   </div>
 
   <!-- S2: CASH FLOW CHART -->
@@ -1174,21 +1211,32 @@ async function rTx(){
   if(TF.mc)fl=fl.filter(t=>t.mainCatId===TF.mc);
   if(TF.acc)fl=fl.filter(t=>t.accountId===TF.acc);
   if(TF.q){const q=TF.q.toLowerCase();fl=fl.filter(t=>(t.description||'').toLowerCase().includes(q)||(t.raw_description||'').toLowerCase().includes(q));}
-  const inc=fl.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
-  const out=fl.filter(t=>t.type!=='income'&&t.type!=='transfer').reduce((s,t)=>s+t.amount,0);
+  const inc=fl.filter(t=>txDir(t)==='in').reduce((s,t)=>s+t.amount,0);
+  const out=fl.filter(t=>txDir(t)==='out').reduce((s,t)=>s+t.amount,0);
+  // Build running balance map for transactions in this month, per account
+  const rbMaps={};
+  const accIds=[...new Set(fl.map(t=>t.accountId).filter(Boolean))];
+  accIds.forEach(aid=>{
+    const accTxns=(S.txnCache[S.month]||[]).filter(t=>t.accountId===aid);
+    const opening=getAccountOpeningBal(aid,S.month);
+    rbMaps[aid]=calcRunningBalance(accTxns,opening);
+  });
   const rows=fl.length?fl.map(t=>{
     const acc=S.accounts.find(a=>a.id===t.accountId);
     const debt=t.debtId?S.debts.find(d=>d.id===t.debtId):null;
-    const ac=t.type==='income'?'c-ok':t.type==='external_transfer'?'c-ext':'c-bad';
+    const dir=txDir(t);
+    const ac=dir==='in'?'c-ok':(t.type==='external_transfer'?'c-ext':(t.type==='investment'?'c-inv':'c-bad'));
     const ch=(t.mainCatId&&getMC(t.mainCatId))?ctag(t.mainCatId,t.subCatId):'<span style="color:var(--warn);font-size:11px">&#9888; Uncategorized</span>';
     const st=t.isSub?'<span class="stag">SUB</span>':'';
     const ym=t.date?t.date.substr(0,7):S.month;
+    const rb=t.accountId&&rbMaps[t.accountId]?rbMaps[t.accountId].get(t.id):null;
     return`<tr>
       <td style="color:var(--text3);white-space:nowrap;font-size:var(--fs-xs)">${toDD(t.date)}</td>
       <td><div>${h(t.description)}${st}${debt?` <span style="font-size:11px;color:var(--warn)">[${debt.name}]</span>`:''}</div>${t.notes?`<div style="font-size:11px;color:var(--text3)">${h(t.notes)}</div>`:''}</td>
       <td>${ch}</td>
       <td style="font-size:var(--fs-xs)">${acc?`${acc.name} ${ob(acc.owner)}`:''}</td>
-      <td style="text-align:right;font-weight:500;white-space:nowrap" class="${ac}">${t.type==='income'?'+':'-'}${fmtP(t.amount)}</td>
+      <td style="text-align:right;font-weight:500;white-space:nowrap" class="${ac}">${dir==='in'?'+':'-'}${fmtP(t.amount)}</td>
+      <td style="text-align:right;font-size:var(--fs-xs);color:var(--text3);white-space:nowrap">${rb!==null?fmtP(rb):'--'}</td>
       <td>${tbadge(t.type)}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-xs" onclick="openCP('${t.id}','${ym}','${t.mainCatId||''}','${t.subCatId||''}')">Edit Cat</button>
@@ -1228,7 +1276,8 @@ async function rTx(){
     </div>
     <div style="margin-top:8px"><label class="lbl">Description</label><input type="text" id="nt-ds" placeholder="Merchant or payee name"></div>
     <div class="fr" style="margin-top:8px">
-      <div><label class="lbl">Type</label><select id="nt-type"><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option><option value="investment">Investment</option><option value="external_transfer">External Transfer</option></select></div>
+      <div><label class="lbl">Type</label><select id="nt-type" onchange="autoDir(this.value)"><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option><option value="investment">Investment</option><option value="external_transfer">External Transfer</option></select></div>
+      <div><label class="lbl">Direction</label><select id="nt-dir"><option value="out">Out — debit (money leaves)</option><option value="in">In — credit (money arrives)</option></select></div>
       <div><label class="lbl">Account</label><select id="nt-acc"><option value="">-- Unassigned --</option>${S.accounts.map(a=>`<option value="${a.id}">${a.name}</option>`).join('')}</select></div>
     </div>
     <div class="fr" style="margin-top:8px">
@@ -1255,7 +1304,7 @@ async function rTx(){
       <button class="btn btn-xs" onclick="TF={type:'',mc:'',acc:'',q:''};render()">Clear</button>
     </div>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Date</th><th>Description</th><th>Category / Sub-Category</th><th>Account</th><th style="text-align:right">Amount</th><th>Type</th><th></th></tr></thead>
+      <thead><tr><th>Date</th><th>Description</th><th>Category / Sub-Category</th><th>Account</th><th style="text-align:right">Amount</th><th style="text-align:right">Balance</th><th>Type</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
   </div>`;
@@ -1272,6 +1321,12 @@ async function mkSub(id,ym){
   const t=(S.txnCache[ymk]||[]).find(x=>x.id===id);if(t)t.isSub=true;
   schedTxn(ymk);render();toast('Marked as subscription');
 }
+function autoDir(type){
+  const d=document.getElementById('nt-dir');if(!d)return;
+  if(type==='income')d.value='in';
+  else if(type==='expense'||type==='investment'||type==='external_transfer')d.value='out';
+  // transfer stays manual — user must choose
+}
 function addTxnM(){
   const dRaw=document.getElementById('nt-d').value;
   const a=parseFloat(document.getElementById('nt-a').value);
@@ -1280,7 +1335,9 @@ function addTxnM(){
   const dateIso=dRaw.includes('/')?fromDD(dRaw):dRaw;
   const mid=document.getElementById('nt-mc').value||null;
   const sid=document.getElementById('nt-sc').value||null;
-  const t={id:uid(),date:dateIso,description:ds,raw_description:ds,amount:Math.abs(a),type:document.getElementById('nt-type').value,mainCatId:mid,subCatId:sid,accountId:document.getElementById('nt-acc').value||null,debtId:document.getElementById('nt-debt').value||null,notes:document.getElementById('nt-notes').value.trim()};
+  const txType=document.getElementById('nt-type').value;
+  const txDirVal=document.getElementById('nt-dir')?.value||(txType==='income'?'in':'out');
+  const t={id:uid(),date:dateIso,description:ds,raw_description:ds,amount:Math.abs(a),type:txType,direction:txDirVal,mainCatId:mid,subCatId:sid,accountId:document.getElementById('nt-acc').value||null,debtId:document.getElementById('nt-debt').value||null,notes:document.getElementById('nt-notes').value.trim()};
   if(mid)learnRule(ds,mid,sid);
   const ym=dateIso.substr(0,7);
   if(!S.txnCache[ym])S.txnCache[ym]=[];
@@ -1317,7 +1374,10 @@ async function doImport(){
     const cleanDesc=rawDesc.trim();
     if(!mid){const r=getRule(cleanDesc);if(r){mid=r.mid;sid=r.sid;}}
     const di=t.debt_id||t.debtId||null;
-    txns.push({id:uid(),date:t.date,description:cleanDesc,raw_description:rawDesc,amount:Math.abs(parseFloat(t.amount)||0),type:t.type||'expense',mainCatId:mid,subCatId:sid,accountId:ai,debtId:di,notes:(t.notes||'').trim(),flagged:!!t.flagged});
+    const txnType=t.type||'expense';
+    // direction is the source of truth for sign; fallback for pre-direction imports
+    const dir=t.direction||(txnType==='income'?'in':'out');
+    txns.push({id:uid(),date:t.date,description:cleanDesc,raw_description:rawDesc,amount:Math.abs(parseFloat(t.amount)||0),type:txnType,direction:dir,mainCatId:mid,subCatId:sid,accountId:ai,debtId:di,notes:(t.notes||'').trim(),flagged:!!t.flagged});
     added++;
     if(di){applyDP(di,Math.abs(parseFloat(t.amount)||0),t.date,'import',cleanDesc);dapp++;}
   }
@@ -1836,17 +1896,22 @@ const INV=new Set(['brokerage_account','fund_account','gold_account','crypto_wal
 let editAccId=null;
 function onATC(v){const r=document.getElementById('ac-row');if(r)r.style.display=INV.has(v)?'block':'none';}
 function rAcc(){
-  const rows=S.accounts.length?S.accounts.map(a=>`<tr>
+  const rows=S.accounts.length?S.accounts.map(a=>{
+    const lb=calcAccBalance(a);
+    const balTd=lb!==null?`<td><div style="font-size:var(--fs-xs);font-weight:500;color:${lb>=0?'var(--ok)':'var(--bad)'}">${fmt(lb)}</div><div style="font-size:10px;color:var(--text3)">live</div></td>`:'<td style="font-size:var(--fs-xxs);color:var(--text3)">Not set</td>';
+    return`<tr>
     <td><div style="font-weight:500">${h(a.name)}</div>${a.accountNumber?`<div style="font-size:var(--fs-xxs);font-family:monospace;color:var(--text3)">${h(a.accountNumber)}</div>`:''}</td>
     <td style="color:var(--text3)">${h(a.institution||'')}</td>
     <td><span class="badge b-tr" style="font-size:10px">${ATL[a.type]||a.type}</span></td>
+    ${balTd}
     <td>${ob(a.owner)}</td>
-    <td style="font-size:var(--fs-xxs);font-family:monospace;color:var(--text3)">${a.id}</td>
+    <td style="font-size:var(--fs-xs)">${a.openingBalance!=null?`<span style="font-weight:500">${fmtP(a.openingBalance)}</span><br><span style="font-size:10px;color:var(--text3)">as of ${toDD(a.balanceAsOf)||'--'}</span>`:'<span style="color:var(--text3)">--</span>'}</td>
+    <td style="font-size:11px;font-family:monospace;color:var(--text3)">${a.id}</td>
     <td style="white-space:nowrap">
       <button class="btn btn-xs" onclick="openEditAcc('${a.id}')">Edit</button>
       <button class="btn btn-xs btn-d" onclick="delAcc('${a.id}')">&#10005;</button>
     </td>
-  </tr>`).join(''):`<tr><td colspan="6" class="empty">No accounts added yet</td></tr>`;
+  </tr>`;}).join(''):`<tr><td colspan="8" class="empty">No accounts added yet</td></tr>`;
   return`
   <div class="fg jb" style="margin-bottom:1rem">
     <div style="font-size:16px;font-weight:500">Accounts &amp; Cards</div>
@@ -1861,11 +1926,21 @@ function rAcc(){
     <div class="fr3" style="margin-top:8px">
       <div><label class="lbl">Type</label><select id="ac-type" onchange="onATC(this.value)">${ATS}</select></div>
       <div><label class="lbl">Owner</label><select id="ac-owner">${oSel()}</select></div>
-      <div><label class="lbl">IBAN or card number</label><input type="text" id="ac-no" placeholder="SA followed by 22 digits"></div>
+      <div><label class="lbl">IBAN or Card Number</label><input type="text" id="ac-no" placeholder="SA followed by 22 digits"></div>
+    </div>
+    <div class="fr3" style="margin-top:8px">
+      <div><label class="lbl">Current Balance (SAR)</label><input type="number" id="ac-bal" placeholder="e.g. 12,450.00" step="0.01" min="0"></div>
+      <div><label class="lbl">Balance As Of (DD/MM/YYYY)</label><input type="text" id="ac-bal-date" placeholder="DD/MM/YYYY"></div>
+      <div><label class="lbl">Purpose</label><input type="text" id="ac-purp" placeholder="e.g. Main income, groceries only"></div>
     </div>
     <div id="ac-row" style="display:none;margin-top:8px">
-      <label class="lbl">Purpose</label><input type="text" id="ac-purp" placeholder="e.g. US stocks, monthly groceries">
+      <label class="lbl">Asset Class</label><select id="a-asclass">${ACS.map(o=>`<option value="${o.v}">${o.l}</option>`).join('')}</select>
     </div>
+    <div class="fr" style="margin-top:8px">
+      <div><label class="lbl">Opening Balance (SAR)</label><input type="number" id="ac-bal" placeholder="Balance on the as-of date" min="0" step="0.01"></div>
+      <div><label class="lbl">Balance As Of (DD/MM/YYYY)</label><input type="text" id="ac-bal-date" placeholder="DD/MM/YYYY"></div>
+    </div>
+    <div style="font-size:var(--fs-xxs);color:var(--text3);margin-top:4px;line-height:1.6">Set once from your statement. The system calculates the current balance automatically from imported transactions going forward.</div>
     <div class="fg" style="margin-top:10px">
       <button class="btn btn-p" id="acc-sbtn" onclick="saveAcc()">Save</button>
       <button class="btn" onclick="tp('acc-panel');editAccId=null">Cancel</button>
@@ -1874,7 +1949,7 @@ function rAcc(){
   <div class="card">
     <div style="font-size:var(--fs-xs);color:var(--text3);margin-bottom:10px;line-height:1.6">Account ID is used in import JSON. IBAN enables automatic account matching during statement import.</div>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Name / Number</th><th>Institution</th><th>Type</th><th>Owner</th><th>ID</th><th></th></tr></thead>
+      <thead><tr><th>Name / Number</th><th>Institution</th><th>Type</th><th>Owner</th><th>Balance</th><th>ID</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
   </div>`;
@@ -1887,6 +1962,8 @@ function openEditAcc(id){
   document.getElementById('ac-inst').value=a.institution||'';
   document.getElementById('ac-no').value=a.accountNumber||'';
   const purpEl=document.getElementById('ac-purp');if(purpEl)purpEl.value=a.purpose||'';
+  const balEl=document.getElementById('ac-bal');if(balEl)balEl.value=a.openingBalance!==undefined?a.openingBalance:'';
+  const balDtEl=document.getElementById('ac-bal-date');if(balDtEl)balDtEl.value=a.balanceAsOf?toDD(a.balanceAsOf):'';
   document.getElementById('ac-type').value=a.type||'main_account';onATC(a.type);
   document.getElementById('ac-owner').value=a.owner||S.owners[0]?.id||'';
   document.getElementById('acc-ptitle').textContent='Edit account';document.getElementById('acc-sbtn').textContent='Save changes';
@@ -1895,7 +1972,7 @@ function openEditAcc(id){
 function saveAcc(){
   const name=document.getElementById('ac-name').value.trim();if(!name){toast('Name required',false);return;}
   const type=document.getElementById('ac-type').value;
-  const data={name,institution:document.getElementById('ac-inst').value.trim(),type,owner:document.getElementById('ac-owner').value,accountNumber:document.getElementById('ac-no').value.trim()||null,purpose:document.getElementById('ac-purp')?.value.trim()||''};
+  const balVal=document.getElementById('ac-bal')?.value;const data={name,institution:document.getElementById('ac-inst').value.trim(),type,owner:document.getElementById('ac-owner').value,accountNumber:document.getElementById('ac-no').value.trim()||null,purpose:document.getElementById('ac-purp')?.value.trim()||'',openingBalance:balVal!==''&&balVal!==undefined?parseFloat(balVal):undefined,balanceAsOf:fromDD(document.getElementById('ac-bal-date')?.value||'')||undefined};
   if(editAccId){Object.assign(S.accounts.find(x=>x.id===editAccId),data);toast('Account updated');}
   else{data.id='acc_'+name.toLowerCase().replace(/[^a-z0-9]/g,'_').slice(0,12)+'_'+Math.random().toString(36).substr(2,4);S.accounts.push(data);toast('Account added');}
   editAccId=null;sched();tp('acc-panel');render();
@@ -1917,23 +1994,14 @@ function calcCCBalance(d){
   const allT=allTxns();
   allT.forEach(t=>{
     if(t.date<=asOf)return;
-    // Expenses on the linked card account add to balance
-    if(linkedAccId&&t.accountId===linkedAccId&&t.type==='expense'){
-      balance+=t.amount;
+    // Use direction as source of truth for CC balance
+    const tDir=txDir(t);
+    if(linkedAccId&&t.accountId===linkedAccId){
+      if(tDir==='out')balance+=t.amount;  // spending on card increases balance owed
+      else if(tDir==='in')balance-=t.amount; // payment to card decreases balance owed
     }
-    // Payments to the card: transfers tagged with this debt, or transfers from any account to the card account
-    if(t.debtId===d.id&&t.type==='transfer'){
-      balance-=t.amount;
-    } else if(linkedAccId&&t.accountId===linkedAccId&&t.type==='transfer'){
-      // Inbound transfer to card = payment reducing balance
-      // We detect this by checking if the description mentions payment
-      // and it's a credit on the card account
-      // Actually: from card statement perspective, payments show as credits
-      // We mark them as negative amounts during import (transfers reduce balance)
-      balance-=t.amount;
-    }
-    // Also catch payments from bank statement: transfers where notes/desc mentions card
-    if(!linkedAccId&&t.debtId===d.id&&t.type==='transfer'){
+    // Also catch payments tagged with debt_id from the bank account
+    if(t.debtId===d.id&&t.type==='transfer'&&tDir==='out'){
       balance-=t.amount;
     }
   });
@@ -1943,6 +2011,18 @@ function getCCUtil(d){
   if(d.type!=='credit_card'||!d.creditLimit)return null;
   const bal=calcCCBalance(d);
   return{balance:bal,limit:d.creditLimit,pct:Math.min(100,Math.round(bal/d.creditLimit*100))};
+}
+function calcAccBalance(acc){
+  if(acc.openingBalance===undefined||acc.openingBalance===null)return null;
+  const asOf=acc.balanceAsOf||'1900-01-01';
+  let balance=acc.openingBalance;
+  allTxns().forEach(t=>{
+    if(t.accountId!==acc.id||t.date<=asOf)return;
+    const d=txDir(t);
+    if(d==='in')balance+=t.amount;
+    else balance-=t.amount;
+  });
+  return balance;
 }
 function onDebtTypeChange(v){
   const ccFields=document.getElementById('cc-fields');
