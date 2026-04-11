@@ -3016,7 +3016,7 @@ Generate 5-8 insights covering: savings rate, spending trends, debt management, 
   const userPrompt=`Here is my financial data snapshot:\n\n${JSON.stringify(snapshot, null, 2)}\n\nProvide a thorough analysis with specific, actionable insights based on this data.`;
 
   try{
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{
+    const resp=await fetch('https://dgefsppkijrrvotggeom.supabase.co/functions/v1/ai-proxy',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
