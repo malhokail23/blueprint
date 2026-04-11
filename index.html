@@ -362,11 +362,20 @@ tbody tr:hover td{background:var(--bg2)}.tbl-wrap{overflow-x:auto}
 <!-- DELETE MODAL -->
 <div class="mo" id="del-modal">
   <div class="md">
-    <div class="mdtitle">&#9888; Reset All Data</div>
-    <div class="mddesc">This will permanently delete all your data from Supabase. Cannot be undone. Type <strong>DELETE</strong> in the field below to confirm.</div>
-    <input type="text" id="del-confirm-input" placeholder="Type DELETE to confirm" oninput="document.getElementById('del-confirm-btn').disabled=this.value!=='DELETE'" style="margin-bottom:10px">
-    <button class="btn btn-d" id="del-confirm-btn" style="width:100%" disabled onclick="execClear()">Permanently Delete All Data</button>
-    <button class="btn" style="width:100%;margin-top:8px" onclick="document.getElementById('del-modal').classList.remove('active');document.getElementById('del-confirm-input').value='';document.getElementById('del-confirm-btn').disabled=true">Cancel</button>
+    <div class="mdtitle">&#9888; Data Reset Options</div>
+    <div class="mddesc">Choose what to reset. Accounts, debts, goals, income, bills, and staff are kept unless you choose Reset Everything.</div>
+    <div style="background:var(--bg2);border-radius:var(--r);padding:1rem;margin-bottom:10px">
+      <div style="font-size:14px;font-weight:500;margin-bottom:4px">Reset Transactions Only</div>
+      <div style="font-size:var(--fs-xs);color:var(--text3);margin-bottom:10px;line-height:1.6">Deletes all imported transaction data. Keeps accounts, debts, goals, income, bills, staff, and subscriptions intact.</div>
+      <button class="btn btn-d btn-sm" onclick="execClearTxns()">Reset Transactions Only</button>
+    </div>
+    <div style="background:var(--bg2);border-radius:var(--r);padding:1rem">
+      <div style="font-size:14px;font-weight:500;margin-bottom:4px">Reset Everything</div>
+      <div style="font-size:var(--fs-xs);color:var(--text3);margin-bottom:10px;line-height:1.6">Permanently deletes all data. Cannot be undone. Type DELETE to confirm.</div>
+      <input type="text" id="del-confirm-input" placeholder="Type DELETE to confirm" oninput="document.getElementById('del-confirm-btn').disabled=this.value!=='DELETE'" style="margin-bottom:8px">
+      <button class="btn btn-d btn-sm" id="del-confirm-btn" disabled onclick="execClear()">Permanently Delete Everything</button>
+    </div>
+    <button class="btn btn-sm" style="width:100%;margin-top:10px" onclick="document.getElementById('del-modal').classList.remove('active');document.getElementById('del-confirm-input').value='';document.getElementById('del-confirm-btn').disabled=true">Cancel</button>
   </div>
 </div>
 
@@ -495,6 +504,16 @@ async function confirmPin(){
 function closePinM(){document.getElementById('pin-modal').classList.remove('active');pinCb=null;}
 
 // ─── RESET ALL DATA (Bug 4.2 fix) ───
+async function execClearTxns(){
+  document.getElementById('del-modal').classList.remove('active');
+  setSS('Clearing transactions...');
+  const months=Object.keys(S.txnCache||{});
+  for(const ym of months){try{await sbDel('phase1_txn_'+ym);}catch(e){console.warn('del txn row failed',ym);}}
+  S.txnCache={};
+  sched();
+  toast('All transactions cleared. Accounts, debts and settings intact.');
+  sw('transactions');
+}
 async function execClear(){
   document.getElementById('del-modal').classList.remove('active');
   document.getElementById('del-confirm-input').value='';
@@ -604,13 +623,20 @@ async function loadS(sbData){
 }
 
 async function loadAllTxnRows(){
-  // We need to discover which months have data. We'll list rows with prefix pattern.
-  // Since Supabase REST doesn't support prefix search easily, we load months we know about
-  // plus the current and surrounding months as a practical approach.
   const now=getYM(new Date());
   const toCheck=[...mRange(addM(now,-24),addM(now,1))];
   S.txnCache={};
-  const loads=toCheck.map(ym=>sbGet('phase1_txn_'+ym).then(d=>{if(d?.txns)S.txnCache[ym]=d.txns;}));
+  const loads=toCheck.map(async ym=>{
+    const d=await sbGet('phase1_txn_'+ym);
+    if(!d)return;
+    // V1.2 format: encrypted monthly row
+    if(d.encData){
+      try{const r=await dec(sKey,d.encData);if(r?.txns?.length)S.txnCache[ym]=r.txns;}
+      catch(e){console.warn('txn row decrypt failed',ym);}
+    }
+    // Legacy fallback: unencrypted txns directly in row
+    else if(d.txns?.length){S.txnCache[ym]=d.txns;}
+  });
   await Promise.all(loads);
 }
 
@@ -2260,7 +2286,10 @@ function rSettings(){
       <div class="card" style="border-color:#FCA5A5">
         <div class="chdr" style="color:var(--bad)">Destructive Actions</div>
         <div style="font-size:var(--fs-xs);color:var(--text2);margin-bottom:12px;line-height:1.6">Permanently deletes all data. Cannot be undone.</div>
-        <button class="btn btn-d" onclick="document.getElementById('del-modal').classList.add('active')">Reset All Data</button>
+        <div class="fg" style="gap:8px;flex-wrap:wrap">
+          <button class="btn btn-d" onclick="execClearTxns()">Reset Transactions Only</button>
+          <button class="btn btn-d" onclick="document.getElementById('del-modal').classList.add('active')">Reset Everything</button>
+        </div>
       </div>
     </div>
     <div>
