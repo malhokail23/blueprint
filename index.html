@@ -481,7 +481,12 @@ async function doUnlock(){
     sKey=key;await loadS(d);showModules();
   }catch(e){err.textContent='Incorrect passphrase.';btn.disabled=false;btn.textContent='Unlock \u2192';}
 }
-function lockApp(){sKey=null;showAuth('s-unlock');const p=document.getElementById('ul-p');if(p){p.value='';p.focus();}const e=document.getElementById('ul-err');if(e)e.textContent='';const b=document.getElementById('ul-btn');if(b){b.disabled=false;b.textContent='Unlock \u2192';}}
+function lockApp(){sKey=null;
+  // H2: Clear decrypted state from memory
+  S.accounts=[];S.debts=[];S.goals=[];S.income=[];S.bills=[];S.subs=[];
+  S.staff=[];S.rules=[];S.dismissed=[];S.deletedCats=[];S.deletedSubs=[];
+  S.owners=[];S.txnCache={};S.monthlyBal={};S.matchedPairs=[];S.settings={};
+  showAuth('s-unlock');const p=document.getElementById('ul-p');if(p){p.value='';p.focus();}const e=document.getElementById('ul-err');if(e)e.textContent='';const b=document.getElementById('ul-btn');if(b){b.disabled=false;b.textContent='Unlock \u2192';}}
 
 // ─── PIN MODAL ───
 function reqPin(title,desc,cb){
@@ -508,6 +513,7 @@ function closePinM(){document.getElementById('pin-modal').classList.remove('acti
 // ─── RESET ALL DATA (Bug 4.2 fix) ───
 async function execClearTxns(){
   document.getElementById('del-modal').classList.remove('active');
+  if(!confirm('Permanently delete all imported transactions? This cannot be undone.'))return;
   setSS('Clearing transactions...');
   const months=Object.keys(S.txnCache||{});
   for(const ym of months){try{await sbDel('phase1_txn_'+ym);}catch(e){console.warn('del txn row failed',ym);}}
@@ -524,9 +530,11 @@ async function execClear(){
     // Wipe main row
     const d=await sbGet('phase1');
     if(d){const e=await enc(sKey,{version:VERSION});await sbPut('phase1',{salt:d.salt,ver:d.ver,encData:e});}
-    // Wipe all monthly txn rows
-    const months=Object.keys(S.txnCache||{});
-    for(const ym of months){try{await sbDel('phase1_txn_'+ym);}catch{}}
+    // H5: Wipe monthly txn rows — include wide range to catch orphaned rows beyond cache
+    const cachedMonths=Object.keys(S.txnCache||{});
+    const now=getYM(new Date());
+    const allMonths=new Set([...cachedMonths,...mRange(addM(now,-60),addM(now,1))]);
+    for(const ym of allMonths){try{await sbDel('phase1_txn_'+ym);}catch{}}
   }catch(e){console.error('Wipe error:',e);}
   sKey=null;
   showAuth('s-setup');
@@ -556,7 +564,7 @@ function fmt(n){if(n===undefined||n===null)return'--';return S.settings.currency
 function fmtS(n,sg=false){return(sg&&n>0?'+':'')+(n<0?'-':'')+S.settings.currency+'\u00a0'+Math.abs(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});}
 function fmtP(n){return S.privacy?`<span style="filter:blur(5px);user-select:none">${fmt(n)}</span>`:fmt(n);}
 function fmtSP(n,sg=false){return S.privacy?`<span style="filter:blur(5px);user-select:none">${fmtS(n,sg)}</span>`:fmtS(n,sg);}
-function uid(){return'x'+Math.random().toString(36).substr(2,8)+Date.now().toString(36);}
+function uid(){return'tx_'+(typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID().replace(/-/g,'').substr(0,14):Math.random().toString(36).substr(2,9)+Date.now().toString(36));}
 function toast(msg,ok=true){const el=document.getElementById('toast');if(!el)return;el.textContent=msg;el.style.background=ok?'#111':'var(--bad)';el.classList.add('show');setTimeout(()=>el.classList.remove('show'),3200);}
 function setSS(m){const e=document.getElementById('save-st');if(e)e.textContent=m;}
 function ob(oid){const i=S.owners.findIndex(o=>o.id===oid);const o=S.owners[i];if(!o)return'';const c=oc(i);return`<span style="font-size:11px;font-weight:500;padding:2px 7px;border-radius:8px;background:${c}22;color:${c}">${o.name}</span>`;}
@@ -638,8 +646,9 @@ function restoreS(d){
   // txnCache stays separate - loaded in loadS
   applyDeletions();
 }
+const _appliedDels=new Set();
 function applyDeletions(){
-  if(S.deletedCats&&S.deletedCats.length){S.deletedCats.forEach(id=>{const i=MAIN_CATS.findIndex(m=>m.id===id);if(i>=0)MAIN_CATS.splice(i,1);delete CAT_COLORS[id];delete SUGGESTED[id];});}
+  if(S.deletedCats&&S.deletedCats.length){S.deletedCats.forEach(id=>{if(_appliedDels.has(id))return;const i=MAIN_CATS.findIndex(m=>m.id===id);if(i>=0){MAIN_CATS.splice(i,1);_appliedDels.add(id);}delete CAT_COLORS[id];delete SUGGESTED[id];});}
   if(S.deletedSubs&&S.deletedSubs.length){S.deletedSubs.forEach(id=>{const i=SUB_CATS.findIndex(s=>s.id===id);if(i>=0)SUB_CATS.splice(i,1);});}
 }
 
@@ -846,8 +855,8 @@ async function rOv(){
   // Owner-filtered versions of all data arrays
   const fDebts=ownerOk?S.debts.filter(d=>d.owner===S.dashOwner):S.debts;
   const fGoals=ownerOk?S.goals.filter(g=>g.owner===S.dashOwner):S.goals;
-  const fStaff=ownerOk?S.staff:S.staff; // staff has no owner field — show all
-  const fIncome=ownerOk?S.income:S.income; // income has no owner field
+  const fStaff=S.staff; // staff has no owner field yet — shows all owners
+  const fIncome=S.income; // income has no owner field yet — shows all owners
   const n=months.length;
 
   // Core metrics
@@ -1191,10 +1200,20 @@ async function rOv(){
       <div>
         <div class="ctitle">Expected vs Received This Month</div>
         ${S.income.filter(i=>i.status==='active'&&i.frequency==='Monthly').map(i=>{
-          const received=(S.txnCache[S.month]||[]).filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
-          return`<div class="fg jb" style="padding:5px 0;border-bottom:1px solid var(--bg3)">
-            <span style="font-size:var(--fs-xs)">${h(i.name)}</span>
-            <span style="font-size:var(--fs-xs);font-weight:500">${fmtP(i.amount)}</span>
+          // M2: match per source using keyword if available, otherwise all income
+          const kw=(i.keyword||i.source||'').toLowerCase().trim();
+          const monthInc=(S.txnCache[S.month]||[]).filter(t=>t.type==='income'&&txDir(t)==='in');
+          const received=kw
+            ?monthInc.filter(t=>(t.description||'').toLowerCase().includes(kw)||(t.raw_description||'').toLowerCase().includes(kw)).reduce((s,t)=>s+t.amount,0)
+            :monthInc.reduce((s,t)=>s+t.amount,0);
+          const pct=i.amount>0?Math.min(100,Math.round(received/i.amount*100)):0;
+          const col=pct>=100?'c-ok':pct>=50?'c-warn':'c-bad';
+          return`<div style="padding:5px 0;border-bottom:1px solid var(--bg3)">
+            <div class="fg jb">
+              <span style="font-size:var(--fs-xs)">${h(i.name)}</span>
+              <span style="font-size:var(--fs-xs);font-weight:500" class="${col}">${fmtP(received)} / ${fmtP(i.amount)}</span>
+            </div>
+            <div style="height:3px;background:var(--bg3);border-radius:2px;margin-top:3px"><div style="height:3px;background:${pct>=100?'var(--ok)':pct>=50?'var(--warn)':'var(--bad)'};border-radius:2px;width:${pct}%"></div></div>
           </div>`;}).join('')||'<div style="font-size:var(--fs-xs);color:var(--text3);padding:8px 0">No income sources defined. Add them in the Income tab.</div>'}
       </div>
       <div>
@@ -1290,163 +1309,6 @@ function buildCharts(){
 
 // ─── TRANSACTIONS ───
 let TF={type:'',mc:'',acc:'',q:'',sortCol:'',sortDir:1,txnAcc:'',txnTab:'bank'};
-async function rTx(){
-  const txns=S.txnCache[S.month]||[];
-  // Primary account selector — scopes the entire view
-  const scopedAcc=TF.txnAcc||null;
-  let fl=scopedAcc?txns.filter(t=>t.accountId===scopedAcc):[...txns];
-  const showBalance=!!scopedAcc; // balance column only meaningful for single account
-  if(TF.type)fl=fl.filter(t=>t.type===TF.type);
-  if(TF.mc)fl=fl.filter(t=>t.mainCatId===TF.mc);
-  if(TF.acc&&TF.acc!==scopedAcc)fl=fl.filter(t=>t.accountId===TF.acc);
-  if(TF.q){const q=TF.q.toLowerCase();fl=fl.filter(t=>(t.description||'').toLowerCase().includes(q)||(t.raw_description||'').toLowerCase().includes(q));}
-  const inc=fl.filter(t=>txDir(t)==='in'&&!isMatched(t.id)).reduce((s,t)=>s+t.amount,0);
-  const out=fl.filter(t=>txDir(t)==='out'&&!isMatched(t.id)).reduce((s,t)=>s+t.amount,0);
-  // Build running balance map for transactions in this month, per account
-  const rbMaps={};
-  const accIds=[...new Set(fl.map(t=>t.accountId).filter(Boolean))];
-  accIds.forEach(aid=>{
-    const accTxns=(S.txnCache[S.month]||[]).filter(t=>t.accountId===aid);
-    const opening=getAccountOpeningBal(aid,S.month);
-    rbMaps[aid]=calcRunningBalance(accTxns,opening);
-  });
-  // Sorting
-  if(TF.sortCol){
-    fl.sort((a,b)=>{
-      let va,vb;
-      if(TF.sortCol==='date'){va=a.date||'';vb=b.date||'';}
-      else if(TF.sortCol==='desc'){va=(a.description||'').toLowerCase();vb=(b.description||'').toLowerCase();}
-      else if(TF.sortCol==='amount'){va=a.amount||0;vb=b.amount||0;}
-      else if(TF.sortCol==='cat'){va=(getMC(a.mainCatId)?.name||'').toLowerCase();vb=(getMC(b.mainCatId)?.name||'').toLowerCase();}
-      else if(TF.sortCol==='type'){va=a.type||'';vb=b.type||'';}
-      else if(TF.sortCol==='acc'){va=(S.accounts.find(x=>x.id===a.accountId)?.name||'').toLowerCase();vb=(S.accounts.find(x=>x.id===b.accountId)?.name||'').toLowerCase();}
-      if(va<vb)return -TF.sortDir;
-      if(va>vb)return TF.sortDir;
-      return 0;
-    });
-  }
-  const rows=fl.length?fl.map(t=>{
-    const acc=S.accounts.find(a=>a.id===t.accountId);
-    const debt=t.debtId?S.debts.find(d=>d.id===t.debtId):null;
-    const dir=txDir(t);
-    const ac=dir==='in'?'c-ok':(t.type==='external_transfer'?'c-ext':(t.type==='investment'?'c-inv':'c-bad'));
-    const isMatchedTxn=isMatched(t.id);
-    const matchedTag=isMatchedTxn?'<span class="badge b-tr" style="font-size:10px;margin-left:4px" title="Matched with transfer from another account">&#8646; Matched</span>':'';
-    const pendingTag=(!isMatchedTxn&&(t.type==='transfer'||t.type==='external_transfer')&&!t.transferDismissed)?'<span class="badge" style="background:#FEF3C7;color:#92400E;font-size:10px;margin-left:4px">Pending match</span>':'';
-    const ch=(t.mainCatId&&getMC(t.mainCatId))?ctag(t.mainCatId,t.subCatId):'<span style="color:var(--warn);font-size:11px">&#9888; Uncategorized</span>';
-    const st=t.isSub?`<span class="stag">SUB <button onclick="event.stopPropagation();removeSub('${t.id}','${ym}')" style="background:none;border:none;cursor:pointer;color:inherit;padding:0;margin-left:2px;font-size:9px;line-height:1;vertical-align:middle" title="Remove subscription tag">&#10005;</button></span>`:'';
-    const ym=t.date?t.date.substr(0,7):S.month;
-    const rb=t.accountId&&rbMaps[t.accountId]?rbMaps[t.accountId].get(t.id):null;
-    return`<tr>
-      <td style="color:var(--text3);white-space:nowrap;font-size:var(--fs-xs)">${toDD(t.date)}</td>
-      <td><div>${h(t.description)}${st}${matchedTag}${pendingTag}${debt?` <span style="font-size:11px;color:var(--warn)">[${debt.name}]</span>`:''}</div>${t.notes?`<div style="font-size:11px;color:var(--text3)">${h(t.notes)}</div>`:''}</td>
-      <td>${ch}</td>
-      <td style="font-size:var(--fs-xs)">${acc?`${acc.name} ${ob(acc.owner)}`:''}</td>
-      <td style="text-align:right;font-weight:500;white-space:nowrap" class="${ac}">${dir==='in'?'+':'-'}${fmtP(t.amount)}</td>
-      ${showBalance?`<td style="text-align:right;font-size:var(--fs-xs);white-space:nowrap" class="${rb!==null?(rb<0?'c-bad':'c-ok'):''}">${rb!==null?fmtS(rb):'--'}</td>`:''}
-      <td>${tbadge(t.type)}</td>
-      <td style="white-space:nowrap">
-        <button class="btn btn-xs" onclick="openCP('${t.id}','${ym}','${t.mainCatId||''}','${t.subCatId||''}')">Cat</button>
-        <button class="btn btn-xs" onclick="openEditTxn('${t.id}','${ym}')">Edit</button>
-        ${!t.isSub?`<button class="btn btn-xs" onclick="mkSub('${t.id}','${ym}')">Sub</button>`:''}
-        <button class="btn btn-xs btn-d" onclick="delTxn('${t.id}','${ym}')">&#10005;</button>
-      </td>
-    </tr>`;}).join(''):`<tr><td colspan="7" class="empty">No transactions match the current filters</td></tr>`;
-  const tLabels={'':'All Types','income':'Income','expense':'Expense','transfer':'Transfer','investment':'Investment','external_transfer':'External Transfer'};
-  const tOpts=['','income','expense','transfer','investment','external_transfer'].map(v=>`<option value="${v}" ${TF.type===v?'selected':''}>${tLabels[v]}</option>`).join('');
-  const mOpts=`<option value="">All Categories</option>`+MAIN_CATS.map(m=>`<option value="${m.id}" ${TF.mc===m.id?'selected':''}>${m.name}</option>`).join('');
-  const aOpts=`<option value="">All Accounts</option>`+S.accounts.map(a=>`<option value="${a.id}" ${TF.acc===a.id?'selected':''}>${a.name}</option>`).join('');
-  return`
-  <div style="margin-bottom:1rem">
-    <div style="font-size:var(--fs-xxs);color:var(--text2);font-weight:600;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Account View</div>
-    <div class="fg" style="gap:6px;flex-wrap:wrap;margin-bottom:1rem">
-      <button class="opill ${!TF.txnAcc?'active':''}" onclick="setTxnAcc('')">All Accounts</button>
-      ${S.accounts.map(a=>`<button class="opill ${TF.txnAcc===a.id?'active':''}" onclick="setTxnAcc('${a.id}')">${a.name}</button>`).join('')}
-    </div>
-    ${TF.txnAcc?`<div style="font-size:var(--fs-xxs);color:var(--info);padding:5px 10px;background:#EFF6FF;border-radius:var(--rsm);display:inline-block">
-      Showing ${S.accounts.find(a=>a.id===TF.txnAcc)?.name||''} · Running balance visible · Balance guard available
-    </div>`:`<div style="font-size:var(--fs-xxs);color:var(--text3)">Select an account to see running balance and use the balance guard</div>`}
-  </div>
-  <div class="fg jb" style="margin-bottom:1rem;flex-wrap:wrap;gap:8px">
-    <div class="mnav"><button onclick="prevM()">&#8592;</button><div class="mnav-lbl">${fmtYM(S.month)}</div><button onclick="nextM()">&#8594;</button></div>
-    <div class="fg" style="gap:6px;flex-wrap:wrap">
-      <button class="btn btn-sm" onclick="tp('imp-panel');setTimeout(prefillOpeningBal,50)">Import JSON</button>
-      <button class="btn btn-sm btn-p" onclick="tp('atxn-panel')">+ Add Manually</button>
-    </div>
-  </div>
-  <div id="imp-panel" class="panel">
-    <div class="chdr">Import from Claude Statement Analysis</div>
-    <div style="font-size:var(--fs-xs);color:var(--text3);margin-bottom:10px;line-height:1.6">Share statements with Claude in this project → paste the JSON output below. Merchant rules apply automatically.</div>
-    <div class="fr3" style="margin-bottom:8px">
-      <div><label class="lbl">Account</label><select id="imp-acc-override" onchange="prefillOpeningBal()"><option value="">Auto-detect from JSON</option>${S.accounts.map(a=>`<option value="${a.id}" ${TF.txnAcc===a.id?'selected':''}>${a.name}</option>`).join('')}</select></div>
-      <div><label class="lbl">Opening balance (SAR) — start of month</label><input type="number" id="imp-opening-bal" placeholder="Balance on last day of previous month" step="0.01"></div>
-      <div><label class="lbl">Closing balance (SAR) — end of month</label><input type="number" id="imp-closing-bal" placeholder="Balance on last day of this statement" step="0.01"></div>
-    </div>
-    <div style="font-size:var(--fs-xxs);color:var(--text3);margin-bottom:8px;line-height:1.5">Balance guard: opening + all transactions = closing. All types (income, expense, transfer) counted by direction. Discrepancy above SAR 1 is flagged.</div>
-    <label class="lbl">JSON Data</label>
-    <textarea id="imp-json" placeholder='{"account_id":"acc_xxx","month":"2026-03","transactions":[]}'></textarea>
-    <div id="imp-err" style="font-size:var(--fs-xs);color:var(--bad);margin-top:6px;display:none"></div>
-    <div class="fg jb" style="margin-top:8px;flex-wrap:wrap;gap:8px">
-      <div class="fg" style="gap:6px">
-        <button class="btn btn-p" onclick="doImport()">Import</button>
-        <button class="btn" onclick="tp('imp-panel')">Cancel</button>
-      </div>
-      <button class="btn btn-d btn-sm" onclick="clearMonthTxns()" title="Delete all transactions for the displayed month for the selected account">&#128465; Clear this month</button>
-    </div>
-  </div>
-  <div id="atxn-panel" class="panel">
-    <div class="chdr">Add Transaction Manually</div>
-    <div class="fr">
-      <div><label class="lbl">Date (DD/MM/YYYY)</label><input type="text" id="nt-d" placeholder="DD/MM/YYYY"></div>
-      <div><label class="lbl">Amount (SAR)</label><input type="number" id="nt-a" placeholder="0.00" min="0" step="0.01"></div>
-    </div>
-    <div style="margin-top:8px"><label class="lbl">Description</label><input type="text" id="nt-ds" placeholder="Merchant or payee name"></div>
-    <div class="fr" style="margin-top:8px">
-      <div><label class="lbl">Type</label><select id="nt-type" onchange="autoDir(this.value)"><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Transfer</option><option value="investment">Investment</option><option value="external_transfer">External Transfer</option></select></div>
-      <div><label class="lbl">Direction</label><select id="nt-dir"><option value="out">Out — debit (money leaves)</option><option value="in">In — credit (money arrives)</option></select></div>
-      <div><label class="lbl">Account</label><select id="nt-acc"><option value="">-- Unassigned --</option>${S.accounts.map(a=>`<option value="${a.id}">${a.name}</option>`).join('')}</select></div>
-    </div>
-    <div class="fr" style="margin-top:8px">
-      <div><label class="lbl">Linked Debt</label><select id="nt-debt"><option value="">-- None --</option>${S.debts.filter(d=>d.status==='active').map(d=>`<option value="${d.id}">${d.name}</option>`).join('')}</select></div>
-      <div><label class="lbl">Notes</label><input type="text" id="nt-notes" placeholder="Optional"></div>
-    </div>
-    <input type="hidden" id="nt-mc"><input type="hidden" id="nt-sc">
-    <button class="btn btn-sm" style="margin-top:10px" id="nt-cat-btn" onclick="openCPNew()">Select Category</button>
-    <div class="fg" style="margin-top:10px"><button class="btn btn-p" onclick="addTxnM()">Add Transaction</button><button class="btn" onclick="tp('atxn-panel')">Cancel</button></div>
-  </div>
-  <div class="card card-bordered" style="margin-bottom:.75rem">
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-      <div><div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;font-weight:500">Total In</div><div style="font-size:17px;font-weight:500" class="c-ok">${fmtP(inc)}</div></div>
-      <div><div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;font-weight:500">Total Out</div><div style="font-size:17px;font-weight:500">${fmtP(out)}</div></div>
-      <div><div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;font-weight:500">Net</div><div style="font-size:17px;font-weight:500" class="${(inc-out)>=0?'c-ok':'c-bad'}">${fmtSP(inc-out,true)}</div></div>
-    </div>
-  </div>
-  <div class="card">
-    <div class="fbar">
-      <input type="text" class="fsel" placeholder="Search..." value="${h(TF.q||'')}" oninput="TF.q=this.value;render()" style="width:150px">
-      <select class="fsel" onchange="TF.type=this.value;render()">${tOpts}</select>
-      <select class="fsel" onchange="TF.mc=this.value;render()">${mOpts}</select>
-      <select class="fsel" onchange="TF.acc=this.value;render()">${aOpts}</select>
-      <button class="btn btn-xs" onclick="TF={type:'',mc:'',acc:'',q:''};render()">Clear</button>
-    </div>
-    <div class="tbl-wrap"><table>
-      <thead><tr>
-        ${(showBalance?['date','desc','cat','acc','amount','bal','type','']:['date','desc','cat','acc','amount','type','']).map((col,idx)=>{
-          const labels={date:'Date',desc:'Description',cat:'Category / Sub-Category',acc:'Account',amount:'Amount',bal:'Balance',type:'Type','':''};
-          const label=labels[col]||'';
-          if(!col)return'<th></th>';
-          if(col==='bal')return'<th style="text-align:right">Balance</th>';
-          const active=TF.sortCol===col;
-          const arrow=active?(TF.sortDir===1?'\u2191':'\u2193'):'\u2195';
-          const style=col==='amount'?'text-align:right;':'';
-          return`<th style="${style}cursor:pointer;user-select:none;white-space:nowrap" onclick="setTxSort('${col}')">${label} <span style="font-size:10px;opacity:${active?1:0.35}">${arrow}</span></th>`;
-        }).join('')}
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>
-  </div>`;
-}
-
 async function delTxn(id,ym){
   const ymk=ym||S.month;
   if(!S.txnCache[ymk])return;
@@ -1521,9 +1383,19 @@ async function saveEditTxn(){
   const newSid=document.getElementById('etxn-sc').value||null;
   t.mainCatId=newMid;t.subCatId=newSid;
   if(newMid)learnRule(t.raw_description||t.description,newMid,newSid);
-  // Re-sort month
-  S.txnCache[ymk].sort((a,b)=>a.date.localeCompare(b.date));
-  schedTxn(ymk);closeEditTxn();render();toast('Transaction updated');
+  // H1: If date moved to a different month, migrate transaction
+  const newYm=dateIso.substr(0,7);
+  if(newYm!==ymk){
+    S.txnCache[ymk]=(S.txnCache[ymk]||[]).filter(x=>x.id!==id);
+    if(!S.txnCache[newYm])S.txnCache[newYm]=[];
+    S.txnCache[newYm].push(t);
+    S.txnCache[newYm].sort((a,b)=>a.date.localeCompare(b.date));
+    schedTxn(ymk);schedTxn(newYm);
+  }else{
+    S.txnCache[ymk].sort((a,b)=>a.date.localeCompare(b.date));
+    schedTxn(ymk);
+  }
+  closeEditTxn();render();toast('Transaction updated');
 }
 function closeEditTxn(){
   document.getElementById('edit-txn-modal').classList.remove('active');
@@ -1539,7 +1411,9 @@ function isMatched(txnId){
 // Tries to pair new transfers with existing unmatched transfers across all months
 function runTransferMatching(newTxns){
   const allT=allTxns();
-  const newTransfers=newTxns.filter(t=>t.type==='transfer'||t.type==='external_transfer');
+  // M5: Only attempt matching for genuinely new transactions (not already in allTxns before this import)
+  const existingIds=new Set(allT.map(t=>t.id));
+  const newTransfers=newTxns.filter(t=>(t.type==='transfer'||t.type==='external_transfer')&&!existingIds.has(t.id));
 
   newTransfers.forEach(t=>{
     if(isMatched(t.id))return;
@@ -1756,12 +1630,13 @@ function clearMonthTxns(){
     ?`Delete ${count} transaction${count!==1?'s':''} for the selected account in ${fmtYM(ym)}?`
     :`Delete ALL ${count} transaction${count!==1?'s':''} for ${fmtYM(ym)} across all accounts?`;
   if(!confirm(msg))return;
-  if(accOverride){
-    S.txnCache[ym]=(S.txnCache[ym]||[]).filter(t=>t.accountId!==accOverride);
-  }else{
-    S.txnCache[ym]=[];
-  }
-  schedTxn(ym);render();
+  const toDelete=accOverride?(S.txnCache[ym]||[]).filter(t=>t.accountId===accOverride):[...(S.txnCache[ym]||[])];
+  const deletedIds=new Set(toDelete.map(t=>t.id));
+  if(accOverride){S.txnCache[ym]=(S.txnCache[ym]||[]).filter(t=>t.accountId!==accOverride);}
+  else{S.txnCache[ym]=[];}
+  // M3: Remove dangling matched pairs for deleted transactions
+  S.matchedPairs=(S.matchedPairs||[]).filter(p=>!deletedIds.has(p.outId)&&!deletedIds.has(p.inId));
+  schedTxn(ym);sched();render();
   toast(`Cleared ${count} transaction${count!==1?'s':''} for ${fmtYM(ym)}.`);
 }
 function setTxnAcc(id){TF.txnAcc=id;TF.sortCol='';render();}
@@ -1769,6 +1644,20 @@ function setTxSort(col){
   if(TF.sortCol===col){TF.sortDir*=-1;}
   else{TF.sortCol=col;TF.sortDir=1;}
   render();
+}
+function openNTCat(){
+  const curM=document.getElementById('nt-mc')?.value||null;
+  const curS=document.getElementById('nt-sc')?.value||null;
+  buildCM(curM,curS);
+  catCb=(m,s)=>{
+    const mcEl=document.getElementById('nt-mc');
+    const scEl=document.getElementById('nt-sc');
+    const lbl=document.getElementById('nt-cat-label');
+    if(mcEl)mcEl.value=m||'';
+    if(scEl)scEl.value=s||'';
+    if(lbl){const mc=getMC(m),sc=getSC(s);lbl.textContent=(mc?.name||'--')+(sc?' / '+sc.name:'');}
+  };
+  document.getElementById('cat-modal').classList.add('active');
 }
 function autoDir(type){
   const d=document.getElementById('nt-dir');if(!d)return;
@@ -1826,9 +1715,13 @@ async function doImport(){
     const txnType=t.type||'expense';
     // direction is the source of truth for sign; fallback for pre-direction imports
     const dir=t.direction||(txnType==='income'?'in':'out');
-    txns.push({id:uid(),date:t.date,description:cleanDesc,raw_description:rawDesc,amount:Math.abs(parseFloat(t.amount)||0),type:txnType,direction:dir,mainCatId:mid,subCatId:sid,accountId:ai,debtId:di,notes:(t.notes||'').trim(),flagged:!!t.flagged});
+    // C4: Deduplication — skip if a matching transaction already exists
+    const amt=Math.abs(parseFloat(t.amount)||0);
+    const isDup=txns.some(x=>x.date===t.date&&Math.abs(x.amount-amt)<0.01&&(x.description||'').trim().toLowerCase()===(cleanDesc||'').toLowerCase()&&(x.accountId||null)===(ai||null));
+    if(isDup)continue;
+    txns.push({id:uid(),date:t.date,description:cleanDesc,raw_description:rawDesc,amount:amt,type:txnType,direction:dir,mainCatId:mid,subCatId:sid,accountId:ai,debtId:di,notes:(t.notes||'').trim(),flagged:!!t.flagged});
     added++;
-    if(di){applyDP(di,Math.abs(parseFloat(t.amount)||0),t.date,'import',cleanDesc);dapp++;}
+    if(di){applyDP(di,amt,t.date,'import',cleanDesc);dapp++;}
   }
   txns.sort((a,b)=>a.date.localeCompare(b.date));
 
@@ -1850,7 +1743,8 @@ async function doImport(){
       if(rId){const mk=rId+'_'+ym;if(!S.monthlyBal[mk])S.monthlyBal[mk]={};S.monthlyBal[mk].closing=closingBal;}
       const guardMsg=`Balance guard: SAR ${diff.toFixed(2)} discrepancy. Opening: ${fmt(openingForGuard)} + txns = ${fmt(calcBal)}, statement says ${fmt(closingBal)}.`;
       toast(guardMsg,false);
-      txns.push({id:uid(),date:ym+'-01',description:'Balance Guard Alert — Discrepancy of SAR '+diff.toFixed(2),amount:0,type:'expense',mainCatId:null,subCatId:null,accountId:rId,flagged:true,notes:`Statement closing balance: ${closingBal}. Calculated: ${calcBal.toFixed(2)}`});
+      // Store guard result in monthlyBal — no phantom transaction
+      if(rId){const mk=rId+'_'+ym;if(!S.monthlyBal[mk])S.monthlyBal[mk]={};S.monthlyBal[mk].guardFail=true;S.monthlyBal[mk].guardDiff=diff;S.monthlyBal[mk].guardCalc=calcBal;}
     }else{toast(`Imported ${added} transaction${added!==1?'s':''}. Balance guard passed ✓`);if(rId){const mk=rId+'_'+ym;if(!S.monthlyBal[mk])S.monthlyBal[mk]={};S.monthlyBal[mk].closing=closingBal;}}
   }
 
@@ -2067,7 +1961,18 @@ async function rSubs(){
   <div class="slbl">Confirmed Subscriptions (${Object.keys(cMap2).length})</div>
   ${subCards}`:`<div class="card"><div class="empty">No confirmed subscriptions yet. Import statements or add manually.</div></div>`}`;
 }
-function cfmSub(key){allTxns().filter(t=>(t.raw_description||t.description||'').toLowerCase().trim().substring(0,30)===key).forEach(t=>t.isSub=true);sched();render();toast('Subscription confirmed');}
+function cfmSub(key){
+  const affYms=new Set();
+  allTxns().filter(t=>(t.raw_description||t.description||'').toLowerCase().trim().substring(0,30)===key).forEach(t=>{
+    t.isSub=true;if(t.date)affYms.add(t.date.substr(0,7));
+  });
+  if(!S.subs.find(s=>(s.name||'').toLowerCase().trim().substring(0,30)===key)){
+    const ex=allTxns().find(t=>(t.raw_description||t.description||'').toLowerCase().trim().substring(0,30)===key);
+    S.subs.push({id:'sub_'+Math.random().toString(36).substr(2,6),name:ex?.description||key,key,notes:''});
+  }
+  affYms.forEach(ym=>schedTxn(ym));
+  sched();render();toast('Subscription confirmed');
+}
 function disSub(key){S.dismissed.push(key);sched();render();toast('Dismissed');}
 function removeSub(id,ym){
   const ymk=ym||S.month;
@@ -2439,7 +2344,7 @@ function rAcc(){
 function openAddAcc(){editAccId=null;['ac-name','ac-inst','ac-no','ac-purp'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});document.getElementById('acc-ptitle').textContent='Add account';document.getElementById('acc-sbtn').textContent='Add account';const p=document.getElementById('acc-panel');if(p&&!p.classList.contains('open')){p.classList.add('open');p.scrollIntoView({behavior:'smooth'});}}
 function openEditAcc(id){
   const a=S.accounts.find(x=>x.id===id);if(!a)return;editAccId=id;
-  ['ac-name','ac-inst','ac-no','ac-purp'].forEach(key=>{const fld={name:'ac-name',institution:'ac-inst',accountNumber:'ac-no',purpose:'ac-purp'}[key]||key;});
+
   document.getElementById('ac-name').value=a.name||'';
   document.getElementById('ac-inst').value=a.institution||'';
   document.getElementById('ac-no').value=a.accountNumber||'';
@@ -2468,27 +2373,25 @@ const DTL=DTS.reduce((m,o)=>{m[o.v]=o.l;return m;},{});
 let editDebtId=null;
 // ─── CC BALANCE CALCULATION ───
 function calcCCBalance(d){
-  // For credit_card type: opening balance + all card expenses since balanceAsOf - all payments since balanceAsOf
   if(d.type!=='credit_card')return d.remaining||0;
   const asOf=d.balanceAsOf||'1900-01-01';
   let balance=d.openingBalance||0;
   const linkedAccId=d.linkedAccountId||null;
   const allT=allTxns();
+  // M4: single clear rule, no double counting
   allT.forEach(t=>{
     if(t.date<=asOf)return;
-    // Use direction as source of truth for CC balance
     const tDir=txDir(t);
     if(linkedAccId&&t.accountId===linkedAccId){
-      if(tDir==='out')balance+=t.amount;  // spending on card increases balance owed
-      else if(tDir==='in')balance-=t.amount; // payment to card decreases balance owed
-    }
-    // Also catch payments tagged with debt_id from the bank account
-    if(t.debtId===d.id&&t.type==='transfer'&&tDir==='out'){
-      balance-=t.amount;
+      if(tDir==='out')balance+=t.amount;  // spending increases balance owed
+      else if(tDir==='in')balance-=t.amount; // payment decreases balance owed
+    } else if(!linkedAccId&&t.debtId===d.id&&t.type==='transfer'){
+      balance-=t.amount; // payment from bank account tagged to this debt
     }
   });
   return Math.max(0,balance);
 }
+
 function getCCUtil(d){
   if(d.type!=='credit_card'||!d.creditLimit)return null;
   const bal=calcCCBalance(d);
@@ -2716,7 +2619,7 @@ function saveDebt(){
     })
   };
   if(editDebtId){Object.assign(S.debts.find(x=>x.id===editDebtId),data);toast('Debt updated');}
-  else{data.id='debt_'+Math.random().toString(36).substr(2,6);data.payments=[];S.debts.push(data);toast('Debt added');}
+  else{data.id='debt_'+(typeof crypto!=='undefined'&&crypto.randomUUID?crypto.randomUUID().replace(/-/g,'').substr(0,9):Math.random().toString(36).substr(2,9));data.payments=[];S.debts.push(data);toast('Debt added');}
   editDebtId=null;sched();tp('debt-panel');render();
 }
 function recDP(id){
@@ -2884,14 +2787,14 @@ function rSettings(){
 function addOwner(){const n=document.getElementById('new-own').value.trim();if(!n){toast('Name required',false);return;}const id='owner_'+n.toLowerCase().replace(/[^a-z0-9]/g,'_')+'_'+Math.random().toString(36).substr(2,4);S.owners.push({id,name:n});sched();render();toast('Owner added');}
 function delOwner(id){S.owners=S.owners.filter(x=>x.id!==id);sched();render();}
 function delRule(m){S.rules=S.rules.filter(r=>r.m!==m);sched();render();}
-function addMainCat(){const name=document.getElementById('cm-name').value.trim();if(!name){toast('Name required',false);return;}const id='cat_main_'+name.toLowerCase().replace(/[^a-z0-9]/g,'_').slice(0,15)+'_'+Math.random().toString(36).substr(2,4);const color=document.getElementById('cm-color').value;MAIN_CATS.push({id,name,type:'expense',color});CAT_COLORS[id]=color;SUGGESTED[id]=[];document.getElementById('cm-name').value='';render();toast('Category added');}
+function addMainCat(){const name=document.getElementById('cm-name').value.trim();if(!name){toast('Name required',false);return;}const id='cat_main_'+name.toLowerCase().replace(/[^a-z0-9]/g,'_').slice(0,15)+'_'+Math.random().toString(36).substr(2,4);const color=document.getElementById('cm-color').value;MAIN_CATS.push({id,name,type:'expense',color});CAT_COLORS[id]=color;SUGGESTED[id]=[];document.getElementById('cm-name').value='';sched();render();toast('Category added');}
 function delMainCat(id){const i=MAIN_CATS.findIndex(m=>m.id===id);if(i>=0)MAIN_CATS.splice(i,1);delete CAT_COLORS[id];delete SUGGESTED[id];if(!S.deletedCats.includes(id))S.deletedCats.push(id);sched();render();toast('Category removed. Affected transactions now appear in Uncategorized.');}
 function addSubCat(){const name=document.getElementById('cs-name').value.trim();if(!name){toast('Name required',false);return;}const id='sub_'+name.toLowerCase().replace(/[^a-z0-9]/g,'_').slice(0,15)+'_'+Math.random().toString(36).substr(2,4);SUB_CATS.push({id,name});document.getElementById('cs-name').value='';render();toast('Sub-category added');}
 function delSubCat(id){const i=SUB_CATS.findIndex(s=>s.id===id);if(i>=0)SUB_CATS.splice(i,1);if(!S.deletedSubs.includes(id))S.deletedSubs.push(id);sched();render();toast('Sub-category removed');}
 
 // --- EXPORT / BACKUP ---
 function doRefExport(){
-  const lines=['The Blueprint v1.1 — Reference File','Generated: '+new Date().toLocaleDateString('en-GB'),'===========================================','','ACCOUNTS','| Name | Institution | Type | IBAN / Card | Account ID |','|---|---|---|---|---|'];
+  const lines=['Capital OS — Reference File','Generated: '+new Date().toLocaleDateString('en-GB'),'===========================================','','ACCOUNTS','| Name | Institution | Type | IBAN / Card | Account ID |','|---|---|---|---|---|'];
   S.accounts.forEach(a=>lines.push(`| ${a.name} | ${a.institution||''} | ${ATL[a.type]||a.type} | ${a.accountNumber||''} | ${a.id} |`));
   lines.push('','DEBTS (active)','| Name | Lender | Statement keyword | Debt ID | Balance As Of |','|---|---|---|---|---|');
   S.debts.filter(d=>d.status==='active').forEach(d=>lines.push(`| ${d.name} | ${d.lender||''} | ${d.refKeyword||''} | ${d.id} | ${toDD(d.balanceAsOf)||''} |`));
@@ -2917,13 +2820,14 @@ function doRefExport(){
   lines.push('','SADAD EXTRACTION RULE','- "Sadad W#NNN" or "Sadad Payment NNN" — strip prefix, look up code above.','- Use biller name as description, not raw code string.','- category_id: cat_main_housing for utilities (SEC, NWC, Marafiq, municipality)','- category_id: cat_main_subscriptions for telecom (STC, Mobily, Zain)','- Do NOT flag as unconfirmed if code is in the list above.');
   const blob=new Blob([lines.join('\n')],{type:'text/plain'});
   const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='blueprint_ref_'+new Date().toISOString().substr(0,10)+'.txt';a.click();URL.revokeObjectURL(url);
-  S.settings.lastBackup=new Date().toISOString();sched();toast('Reference file downloaded');
+  toast('Reference file downloaded');
 }
 function doBackup(){
-  const blob=new Blob([JSON.stringify({...getP(),exported:new Date().toISOString(),version:'1.1'},null,2)],{type:'application/json'});
+  const blob=new Blob([JSON.stringify({...getMainP(),exported:new Date().toISOString(),version:VERSION},null,2)],{type:'application/json'});
   const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='blueprint_backup_'+new Date().toISOString().substr(0,10)+'.json';a.click();URL.revokeObjectURL(url);S.settings.lastBackup=new Date().toISOString();sched();toast('Backup exported');
 }
 async function doRestore(){
+  if(!confirm('Restoring will overwrite all current data. This cannot be undone. Continue?'))return;
   const raw=document.getElementById('restore-json').value.trim();if(!raw){toast('Paste JSON first',false);return;}
   let d;try{d=JSON.parse(raw);}catch{toast('Invalid JSON',false);return;}
   restoreS(d);await saveState();tp('restore-panel');render();toast('Restored and saved');
@@ -3222,7 +3126,7 @@ function buildTxTable(fl, accounts, showBalance, isCards, rbMaps){
     return`<th style="${style}cursor:pointer;user-select:none;white-space:nowrap" onclick="setTxSort('${col}')">${labels[col]} <span style="font-size:10px;opacity:${active?1:0.35}">${arrow}</span></th>`;
   }).join('')}</tr></thead>`;
 
-  const colspan=showBalance?8:7;
+
   const rows=fl.length?fl.map(t=>{
     const acc=accounts.find(a=>a.id===t.accountId);
     const debt=t.debtId?S.debts.find(d=>d.id===t.debtId):null;
@@ -3250,7 +3154,7 @@ function buildTxTable(fl, accounts, showBalance, isCards, rbMaps){
         ${!t.isSub?`<button class="btn btn-xs" onclick="mkSub('${t.id}','${ym}')">Sub</button>`:''}
         <button class="btn btn-xs btn-d" onclick="delTxn('${t.id}','${ym}')">&#10005;</button>
       </td>
-    </tr>`;}).join(''):`<tr><td colspan="${colspan}" class="empty">No transactions found</td></tr>`;
+    </tr>`;}).join(''):`<tr><td colspan="${showBalance?8:7}" class="empty">No transactions found</td></tr>`;
 
   return`<div class="tbl-wrap"><table><${thead}<tbody>${rows}</tbody></table></div>`;
 }
@@ -3287,7 +3191,7 @@ function buildTxHeader(fl, scopedAcc, accountPills, tabLabel){
 
 // ─── BANK ACCOUNTS TAB ───
 async function rTxBank(){
-  const BANK_TYPES_LIST=['main_account','savings_account','sub_account','debit_card','prepaid_card','cash'];
+
   const bankAccs=S.accounts.filter(a=>BANK_ACC_TYPES.has(a.type));
   const txns=S.txnCache[S.month]||[];
   const bankTxns=txns.filter(t=>!t.accountId||bankAccs.some(a=>a.id===t.accountId));
@@ -3399,6 +3303,7 @@ function buildTxFilters(){
 // ─── SHARED IMPORT PANEL ───
 function buildImpPanel(){
   return`
+  <div id="imp-err" style="display:none;color:var(--bad);font-size:var(--fs-xs);margin-bottom:8px;padding:6px 10px;background:#FEE2E2;border-radius:var(--rsm)"></div>
   <div id="imp-panel" class="panel">
     <div class="chdr">Import JSON Statement</div>
     <textarea id="imp-json" rows="6" placeholder="Paste JSON array here..." style="width:100%;margin-bottom:8px;font-family:monospace;font-size:12px"></textarea>
